@@ -1,0 +1,57 @@
+{
+  "agents": [
+    {
+      "id": "claude-001",
+      "name": "Claude",
+      "model": "anthropic/claude-3-sonnet",
+      "type": "claude",
+      "role": "架构设计与编码实现",
+      "capabilities": ["架构设计", "代码生成", "技术选型", "重构"],
+      "callType": "http",
+      "enabled": true,
+      "priority": 1,
+      "config": {
+        "temperature": 0.7,
+        "maxTokens": 4000,
+        "timeout": 60000
+      }
+    },
+    {
+      "id": "codex-001",
+      "name": "Codex",
+      "model": "openai/codex",
+      "type": "codex",
+      "role": "代码执行与测试",
+      "capabilities": ["代码执行", "单元测试", "集成测试"],
+      "callType": "cli",
+      "enabled": false,
+      "priority": 2,
+      "config": {
+        "temperature": 0.3,
+        "maxTokens": 2000,
+        "timeout": 30000
+      }
+    },
+    {
+      "id": "gemini-001",
+      "name": "Gemini",
+      "model": "google/gemini-pro",
+      "type": "gemini",
+      "role": "知识检索与文档生成",
+      "capabilities": ["知识检索", "文档生成", "多模态分析"],
+      "callType": "http",
+      "enabled": false,
+      "priority": 3,
+      "config": {
+        "temperature": 0.5,
+        "maxTokens": 8000,
+        "timeout": 45000
+      }
+    }
+  ],
+  "routing": {
+    "defaultAgent": "claude-001",
+    "mentionPrefix": "@",
+    "autoRespond": true
+  }
+}
