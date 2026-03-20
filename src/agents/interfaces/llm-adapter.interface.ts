@@ -7,7 +7,7 @@ export interface ILLMAdapter {
   readonly type: string;
   readonly role: string;
   readonly capabilities: string[];
-  readonly callType: 'cli' | 'http';
+  readonly callType: 'http';
 
   generate(prompt: string, context: AgentContext): Promise<AgentResponse>;
   streamGenerate(prompt: string, context: AgentContext): AsyncGenerator<string>;
@@ -57,7 +57,7 @@ export interface AgentConfig {
   type: string;
   role: string;
   capabilities: string[];
-  callType: 'cli' | 'http';
+  callType: 'http';
   enabled: boolean;
   priority: number;
   config: {
