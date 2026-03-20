@@ -1,5 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { HttpService } from '@nestjs/axios';
+import { ConfigService } from '@nestjs/config';
 import { of, throwError } from 'rxjs';
 import { AxiosResponse } from 'axios';
 import { GeminiAdapter } from './gemini.adapter';
@@ -13,6 +14,13 @@ describe('GeminiAdapter', () => {
     post: jest.fn(),
   };
 
+  const mockConfigService = {
+    get: jest.fn((key: string) => {
+      if (key === 'gemini.apiKey') return 'test-api-key';
+      return null;
+    }),
+  };
+
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -20,6 +28,10 @@ describe('GeminiAdapter', () => {
         {
           provide: HttpService,
           useValue: mockHttpService,
+        },
+        {
+          provide: ConfigService,
+          useValue: mockConfigService,
         },
       ],
     }).compile();
@@ -85,9 +97,7 @@ describe('GeminiAdapter', () => {
       const error = new Error('API error');
       mockHttpService.post.mockReturnValue(throwError(() => error));
 
-      await expect(adapter.generate('test prompt', mockContext)).rejects.toThrow(
-        'API error',
-      );
+      await expect(adapter.generate('test prompt', mockContext)).rejects.toThrow('API error');
     });
 
     it('should set status to ONLINE after generation', async () => {
@@ -176,12 +186,7 @@ describe('GeminiAdapter', () => {
     });
 
     it('should have correct capabilities', () => {
-      expect(adapter.capabilities).toEqual([
-        '创意建议',
-        'UI/UX设计',
-        '视觉方案',
-        '用户体验',
-      ]);
+      expect(adapter.capabilities).toEqual(['创意建议', 'UI/UX设计', '视觉方案', '用户体验']);
     });
   });
 });

@@ -1,5 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { HttpService } from '@nestjs/axios';
+import { ConfigService } from '@nestjs/config';
 import { of, throwError } from 'rxjs';
 import { AxiosResponse } from 'axios';
 import { ClaudeAdapter } from './claude.adapter';
@@ -13,6 +14,13 @@ describe('ClaudeAdapter', () => {
     post: jest.fn(),
   };
 
+  const mockConfigService = {
+    get: jest.fn((key: string) => {
+      if (key === 'openrouter.apiKey') return 'test-api-key';
+      return null;
+    }),
+  };
+
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -20,6 +28,10 @@ describe('ClaudeAdapter', () => {
         {
           provide: HttpService,
           useValue: mockHttpService,
+        },
+        {
+          provide: ConfigService,
+          useValue: mockConfigService,
         },
       ],
     }).compile();
@@ -96,9 +108,7 @@ describe('ClaudeAdapter', () => {
       const error = new Error('API error');
       mockHttpService.post.mockReturnValue(throwError(() => error));
 
-      await expect(adapter.generate('test prompt', mockContext)).rejects.toThrow(
-        'API error',
-      );
+      await expect(adapter.generate('test prompt', mockContext)).rejects.toThrow('API error');
     });
 
     it('should set status to BUSY during generation', async () => {

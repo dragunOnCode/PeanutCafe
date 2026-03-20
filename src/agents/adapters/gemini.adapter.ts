@@ -1,8 +1,15 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { HttpService } from '@nestjs/axios';
 import { firstValueFrom } from 'rxjs';
 import { AxiosResponse } from 'axios';
-import { ILLMAdapter, AgentContext, AgentResponse, AgentStatus, DecisionResult } from '../interfaces/llm-adapter.interface';
+import {
+  ILLMAdapter,
+  AgentContext,
+  AgentResponse,
+  AgentStatus,
+  DecisionResult,
+} from '../interfaces/llm-adapter.interface';
 import { Message } from '../../common/types';
 
 interface OpenRouterResponse {
@@ -31,18 +38,19 @@ export class GeminiAdapter implements ILLMAdapter {
   readonly callType: 'http' = 'http';
 
   private status: AgentStatus = AgentStatus.ONLINE;
-  private apiKey: string;
   private apiUrl = 'https://openrouter.ai/api/v1/chat/completions';
 
-  constructor(private readonly httpService: HttpService) {
-    this.apiKey = process.env.GEMINI_API_KEY || '';
-  }
+  constructor(
+    private readonly httpService: HttpService,
+    private readonly configService: ConfigService,
+  ) {}
 
   async generate(prompt: string, context: AgentContext): Promise<AgentResponse> {
     this.status = AgentStatus.BUSY;
 
     try {
       const messages = this.buildMessages(prompt, context);
+      const apiKey = this.configService.get<string>('gemini.apiKey') || '';
 
       const response: AxiosResponse<OpenRouterResponse> = await firstValueFrom(
         this.httpService.post<OpenRouterResponse>(
@@ -55,7 +63,7 @@ export class GeminiAdapter implements ILLMAdapter {
           },
           {
             headers: {
-              Authorization: `Bearer ${this.apiKey}`,
+              Authorization: `Bearer ${apiKey}`,
               'Content-Type': 'application/json',
             },
           },

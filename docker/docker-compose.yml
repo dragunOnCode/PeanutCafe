@@ -10,7 +10,7 @@ services:
       POSTGRES_USER: admin
       POSTGRES_PASSWORD: lobster
       POSTGRES_HOST_AUTH_METHOD: md5
-      POSTGRES_INITDB_ARGS: "--auth-host=md5 --auth-local=trust"
+      POSTGRES_INITDB_ARGS: '--auth-host=md5 --auth-local=trust'
     ports:
       - '5432:5432'
     volumes:
@@ -25,6 +25,7 @@ services:
     image: redis:7-alpine
     container_name: lobster-redis
     restart: unless-stopped
+    command: ['redis-server', '--appendonly', 'yes', '--appendfsync', 'everysec', '--save', '3600 1 300 100 60 10000']
     ports:
       - '6379:6379'
     volumes:

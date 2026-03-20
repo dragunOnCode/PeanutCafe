@@ -1,4 +1,5 @@
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
 
 export interface MemoryEntry {
@@ -16,11 +17,15 @@ export class ShortTermMemoryService implements OnModuleDestroy {
   private readonly TTL_SECONDS = 300;
   private readonly MAX_MESSAGES = 20;
 
-  constructor() {
+  constructor(private readonly configService: ConfigService) {
+    const host = this.configService.get<string>('redis.host') || 'localhost';
+    const port = this.configService.get<number>('redis.port') || 6379;
+    const password = this.configService.get<string>('redis.password');
+
     this.redis = new Redis({
-      host: process.env.REDIS_HOST || 'localhost',
-      port: parseInt(process.env.REDIS_PORT || '6379'),
-      password: process.env.REDIS_PASSWORD,
+      host,
+      port,
+      password: password || undefined,
     });
 
     this.redis.on('error', (err) => {

@@ -1,4 +1,5 @@
 import { ShortTermMemoryService, MemoryEntry } from './short-term-memory.service';
+import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
 
 jest.mock('ioredis', () => {
@@ -10,8 +11,19 @@ describe('ShortTermMemoryService', () => {
   let service: ShortTermMemoryService;
   let redis: InstanceType<typeof Redis>;
 
+  const mockConfigService = {
+    get: jest.fn((key: string) => {
+      const config: Record<string, any> = {
+        'redis.host': 'localhost',
+        'redis.port': 6379,
+        'redis.password': undefined,
+      };
+      return config[key];
+    }),
+  };
+
   beforeEach(async () => {
-    service = new ShortTermMemoryService();
+    service = new ShortTermMemoryService(mockConfigService as unknown as ConfigService);
     redis = (service as any).redis;
     await redis.flushall();
   });
@@ -66,9 +78,7 @@ describe('ShortTermMemoryService', () => {
   describe('clear', () => {
     it('should delete memory', async () => {
       const sessionId = 'test-session-3';
-      const messages: MemoryEntry[] = [
-        { role: 'user', content: 'Hello', timestamp: '2024-01-01T00:00:00.000Z' },
-      ];
+      const messages: MemoryEntry[] = [{ role: 'user', content: 'Hello', timestamp: '2024-01-01T00:00:00.000Z' }];
 
       await service.save(sessionId, messages);
       await service.clear(sessionId);
@@ -103,9 +113,7 @@ describe('ShortTermMemoryService', () => {
   describe('TTL behavior', () => {
     it('should set TTL of 5 minutes (300 seconds) on save', async () => {
       const sessionId = 'test-session-5';
-      const messages: MemoryEntry[] = [
-        { role: 'user', content: 'Hello', timestamp: '2024-01-01T00:00:00.000Z' },
-      ];
+      const messages: MemoryEntry[] = [{ role: 'user', content: 'Hello', timestamp: '2024-01-01T00:00:00.000Z' }];
 
       await service.save(sessionId, messages);
 
