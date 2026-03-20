@@ -3,55 +3,44 @@
     {
       "id": "claude-001",
       "name": "Claude",
-      "model": "anthropic/claude-3-sonnet",
       "type": "claude",
+      "model": "anthropic/claude-3-sonnet",
       "role": "架构设计与编码实现",
       "capabilities": ["架构设计", "代码生成", "技术选型", "重构"],
       "callType": "http",
       "enabled": true,
-      "priority": 1,
-      "config": {
-        "temperature": 0.7,
-        "maxTokens": 4000,
-        "timeout": 60000
+      "priority": {
+        "basePriority": 100,
+        "quotaLimit": 100000
       }
     },
     {
       "id": "codex-001",
       "name": "Codex",
-      "model": "openai/codex",
       "type": "codex",
-      "role": "代码执行与测试",
-      "capabilities": ["代码执行", "单元测试", "集成测试"],
-      "callType": "cli",
-      "enabled": false,
-      "priority": 2,
-      "config": {
-        "temperature": 0.3,
-        "maxTokens": 2000,
-        "timeout": 30000
+      "model": "codex",
+      "role": "代码审查与质量把控",
+      "capabilities": ["代码审查", "测试建议", "性能优化", "安全检测"],
+      "callType": "http",
+      "enabled": true,
+      "priority": {
+        "basePriority": 80,
+        "quotaLimit": 80000
       }
     },
     {
       "id": "gemini-001",
       "name": "Gemini",
-      "model": "google/gemini-pro",
       "type": "gemini",
-      "role": "知识检索与文档生成",
-      "capabilities": ["知识检索", "文档生成", "多模态分析"],
+      "model": "gemini-2.0-flash-thinking",
+      "role": "创意发散与视觉设计",
+      "capabilities": ["创意建议", "UI/UX设计", "视觉方案", "用户体验"],
       "callType": "http",
-      "enabled": false,
-      "priority": 3,
-      "config": {
-        "temperature": 0.5,
-        "maxTokens": 8000,
-        "timeout": 45000
+      "enabled": true,
+      "priority": {
+        "basePriority": 80,
+        "quotaLimit": 80000
       }
     }
-  ],
-  "routing": {
-    "defaultAgent": "claude-001",
-    "mentionPrefix": "@",
-    "autoRespond": true
-  }
+  ]
 }
