@@ -1,8 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { HttpService } from '@nestjs/axios';
-import { firstValueFrom } from 'rxjs';
-import { AxiosResponse } from 'axios';
+import OpenAI from 'openai';
 import {
   ILLMAdapter,
   AgentContext,
@@ -12,18 +10,14 @@ import {
 } from '../interfaces/llm-adapter.interface';
 import { Message } from '../../common/types';
 
-interface OpenRouterResponse {
+type ChatMessage = { role: 'system' | 'user' | 'assistant'; content: string };
+type StreamChunk = {
   choices?: Array<{
-    message?: {
-      content?: string;
-    };
+    delta?: {
+      content?: string | null;
+    } | null;
   }>;
-  usage?: {
-    prompt_tokens?: number;
-    completion_tokens?: number;
-    total_tokens?: number;
-  };
-}
+};
 
 @Injectable()
 export class CodexAdapter implements ILLMAdapter {
@@ -31,46 +25,38 @@ export class CodexAdapter implements ILLMAdapter {
 
   readonly id = 'codex-001';
   readonly name = 'Codex';
-  readonly model = 'codex';
+  readonly model = 'glm-4.5-air';
   readonly type = 'codex';
   readonly role = '代码审查与质量把控';
   readonly capabilities = ['代码审查', '测试建议', '性能优化', '安全检测'];
   readonly callType: 'http' = 'http';
 
   private status: AgentStatus = AgentStatus.ONLINE;
-  private apiUrl = 'https://openrouter.ai/api/v1/chat/completions';
+  private client: OpenAI;
 
-  constructor(
-    private readonly httpService: HttpService,
-    private readonly configService: ConfigService,
-  ) {}
+  constructor(private readonly configService: ConfigService) {
+    this.client = new OpenAI({
+      apiKey: this.configService.getOrThrow<string>('GLM_API_KEY'),
+      baseURL: this.configService.getOrThrow<string>('GLM_BASE_URL'),
+    });
+  }
 
   async generate(prompt: string, context: AgentContext): Promise<AgentResponse> {
     this.status = AgentStatus.BUSY;
 
     try {
       const messages = this.buildMessages(prompt, context);
-      const apiKey = this.configService.get<string>('openrouter.apiKey') || '';
+      this.logger.log(`Codex messages history: ${JSON.stringify(messages)}`);
 
-      const response: AxiosResponse<OpenRouterResponse> = await firstValueFrom(
-        this.httpService.post<OpenRouterResponse>(
-          this.apiUrl,
-          {
-            model: this.model,
-            messages,
-            temperature: 0.7,
-            max_tokens: 4000,
-          },
-          {
-            headers: {
-              Authorization: `Bearer ${apiKey}`,
-              'Content-Type': 'application/json',
-            },
-          },
-        ),
-      );
+      const response = await this.client.chat.completions.create({
+        model: this.model,
+        messages: messages as ChatMessage[],
+        temperature: 0.7,
+        max_tokens: 4000,
+      });
 
-      const content = response.data.choices?.[0]?.message?.content ?? '';
+      const content = response.choices[0]?.message?.content ?? '';
+      this.logger.log(`Codex generate response: ${content}`);
 
       return {
         content,
@@ -85,8 +71,32 @@ export class CodexAdapter implements ILLMAdapter {
   }
 
   async *streamGenerate(prompt: string, context: AgentContext): AsyncGenerator<string> {
-    const response = await this.generate(prompt, context);
-    yield response.content;
+    this.status = AgentStatus.BUSY;
+
+    try {
+      const messages = this.buildMessages(prompt, context);
+      this.logger.log(`Codex stream messages history: ${JSON.stringify(messages)}`);
+
+      const stream = await this.client.chat.completions.create({
+        model: this.model,
+        messages: messages as ChatMessage[],
+        temperature: 0.7,
+        max_tokens: 4000,
+        stream: true,
+      });
+
+      for await (const chunk of stream as AsyncIterable<StreamChunk>) {
+        const content = chunk.choices?.[0]?.delta?.content ?? '';
+        if (content) {
+          yield content;
+        }
+      }
+    } catch (error) {
+      this.logger.error(`Codex streamGenerate error: ${error.message}`);
+      throw error;
+    } finally {
+      this.status = AgentStatus.ONLINE;
+    }
   }
 
   async shouldRespond(message: Message, context: AgentContext): Promise<DecisionResult> {
@@ -101,7 +111,7 @@ export class CodexAdapter implements ILLMAdapter {
     return this.status;
   }
 
-  private buildMessages(prompt: string, context: AgentContext): Array<{ role: string; content: string }> {
+  private buildMessages(prompt: string, context: AgentContext): ChatMessage[] {
     const systemPrompt = `你是 Codex，一个专业的代码审查专家。
 你的职责是：
 1. 审查代码质量
@@ -109,7 +119,7 @@ export class CodexAdapter implements ILLMAdapter {
 3. 提供优化建议
 4. 确保代码安全`;
 
-    const messages: Array<{ role: string; content: string }> = [{ role: 'system', content: systemPrompt }];
+    const messages: ChatMessage[] = [{ role: 'system', content: systemPrompt }];
 
     if (context.conversationHistory?.length) {
       const recentMessages = context.conversationHistory.slice(-10);

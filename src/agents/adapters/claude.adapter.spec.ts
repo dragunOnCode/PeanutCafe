@@ -1,34 +1,104 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
-import { of, throwError } from 'rxjs';
-import { AxiosResponse } from 'axios';
+import OpenAI from 'openai';
 import { ClaudeAdapter } from './claude.adapter';
 import { AgentContext, AgentStatus } from '../interfaces/llm-adapter.interface';
 
+jest.mock('openai', () => ({
+  __esModule: true,
+  default: jest.fn(),
+}));
+
 describe('ClaudeAdapter', () => {
   let adapter: ClaudeAdapter;
-  let httpService: HttpService;
-
-  const mockHttpService = {
-    post: jest.fn(),
-  };
+  let createMock: jest.Mock;
 
   const mockConfigService = {
-    get: jest.fn((key: string) => {
-      if (key === 'openrouter.apiKey') return 'test-api-key';
-      return null;
+    getOrThrow: jest.fn((key: string) => {
+      if (key === 'MINIMAX_API_KEY') return 'test-api-key';
+      if (key === 'MINIMAX_BASE_URL') return 'https://test.example.com';
+      throw new Error(`Unexpected config key: ${key}`);
     }),
   };
 
+  const MockedOpenAI = OpenAI as unknown as jest.Mock;
+
+  const mockContext: AgentContext = {
+    sessionId: 'test-session',
+    userId: 'test-user',
+  };
+
+  const createStream = (...chunks: string[]) => ({
+    [Symbol.asyncIterator]: async function* () {
+      for (const chunk of chunks) {
+        yield {
+          choices: [
+            {
+              delta: {
+                content: chunk,
+              },
+            },
+          ],
+        };
+      }
+    },
+  });
+
+  const createMixedStream = () => ({
+    [Symbol.asyncIterator]: async function* () {
+      yield {
+        choices: [
+          {
+            delta: {
+              content: 'Claude ',
+            },
+          },
+        ],
+      };
+      yield {
+        choices: [
+          {
+            delta: {
+              content: null,
+            },
+          },
+        ],
+      };
+      yield {
+        choices: [
+          {
+            delta: {},
+          },
+        ],
+      };
+      yield {
+        choices: [],
+      };
+      yield {
+        choices: [
+          {
+            delta: {
+              content: 'content',
+            },
+          },
+        ],
+      };
+    },
+  });
+
   beforeEach(async () => {
+    createMock = jest.fn();
+    MockedOpenAI.mockImplementation(() => ({
+      chat: {
+        completions: {
+          create: createMock,
+        },
+      },
+    }));
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         ClaudeAdapter,
-        {
-          provide: HttpService,
-          useValue: mockHttpService,
-        },
         {
           provide: ConfigService,
           useValue: mockConfigService,
@@ -37,7 +107,6 @@ describe('ClaudeAdapter', () => {
     }).compile();
 
     adapter = module.get<ClaudeAdapter>(ClaudeAdapter);
-    httpService = module.get<HttpService>(HttpService);
   });
 
   afterEach(() => {
@@ -45,34 +114,21 @@ describe('ClaudeAdapter', () => {
   });
 
   describe('generate', () => {
-    const mockContext: AgentContext = {
-      sessionId: 'test-session',
-      userId: 'test-user',
-    };
-
-    it('should return generated content from OpenRouter API', async () => {
-      const mockResponse: AxiosResponse = {
-        data: {
-          choices: [
-            {
-              message: {
-                content: 'Claude response content',
-              },
+    it('returns generated content from the OpenAI chat completion API', async () => {
+      createMock.mockResolvedValue({
+        choices: [
+          {
+            message: {
+              content: 'Claude response content',
             },
-          ],
-          usage: {
-            prompt_tokens: 10,
-            completion_tokens: 20,
-            total_tokens: 30,
           },
+        ],
+        usage: {
+          prompt_tokens: 10,
+          completion_tokens: 20,
+          total_tokens: 30,
         },
-        status: 200,
-        statusText: 'OK',
-        headers: {},
-        config: {} as any,
-      };
-
-      mockHttpService.post.mockReturnValue(of(mockResponse));
+      });
 
       const result = await adapter.generate('test prompt', mockContext);
 
@@ -83,114 +139,122 @@ describe('ClaudeAdapter', () => {
         total: 30,
       });
       expect(result.timestamp).toBeInstanceOf(Date);
+      expect(createMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          model: 'MiniMax-M2.5',
+          temperature: 0.7,
+          max_tokens: 4000,
+        }),
+      );
+      expect(adapter.getStatus()).toBe(AgentStatus.ONLINE);
     });
 
-    it('should handle empty response content', async () => {
-      const mockResponse: AxiosResponse = {
-        data: {
-          choices: [{}],
-          usage: {},
-        },
-        status: 200,
-        statusText: 'OK',
-        headers: {},
-        config: {} as any,
-      };
-
-      mockHttpService.post.mockReturnValue(of(mockResponse));
+    it('handles empty response content', async () => {
+      createMock.mockResolvedValue({
+        choices: [{}],
+        usage: {},
+      });
 
       const result = await adapter.generate('test prompt', mockContext);
 
       expect(result.content).toBe('');
+      expect(adapter.getStatus()).toBe(AgentStatus.ONLINE);
     });
 
-    it('should throw error when API call fails', async () => {
-      const error = new Error('API error');
-      mockHttpService.post.mockReturnValue(throwError(() => error));
+    it('throws when the API call fails', async () => {
+      createMock.mockRejectedValue(new Error('API error'));
 
       await expect(adapter.generate('test prompt', mockContext)).rejects.toThrow('API error');
-    });
-
-    it('should set status to BUSY during generation', async () => {
-      const mockResponse: AxiosResponse = {
-        data: {
-          choices: [{ message: { content: 'test' } }],
-          usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
-        },
-        status: 200,
-        statusText: 'OK',
-        headers: {},
-        config: {} as any,
-      };
-
-      mockHttpService.post.mockReturnValue(of(mockResponse));
-
-      await adapter.generate('test prompt', mockContext);
-
       expect(adapter.getStatus()).toBe(AgentStatus.ONLINE);
     });
   });
 
   describe('streamGenerate', () => {
-    it('should yield content from generate', async () => {
-      const mockResponse: AxiosResponse = {
-        data: {
-          choices: [{ message: { content: 'streamed content' } }],
-          usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    it('yields incremental chunks from the OpenAI stream API', async () => {
+      createMock.mockResolvedValue(createStream('Claude ', 'streamed ', 'content'));
+
+      const generator = adapter.streamGenerate('test prompt', mockContext);
+
+      await expect(generator.next()).resolves.toEqual({ value: 'Claude ', done: false });
+      expect(adapter.getStatus()).toBe(AgentStatus.BUSY);
+
+      await expect(generator.next()).resolves.toEqual({ value: 'streamed ', done: false });
+      expect(adapter.getStatus()).toBe(AgentStatus.BUSY);
+
+      await expect(generator.next()).resolves.toEqual({ value: 'content', done: false });
+      await expect(generator.next()).resolves.toEqual({ value: undefined, done: true });
+
+      expect(createMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          model: 'MiniMax-M2.5',
+          stream: true,
+          temperature: 0.7,
+          max_tokens: 4000,
+        }),
+      );
+      expect(adapter.getStatus()).toBe(AgentStatus.ONLINE);
+    });
+
+    it('resets status and propagates stream errors', async () => {
+      createMock.mockResolvedValue({
+        [Symbol.asyncIterator]: async function* () {
+          yield {
+            choices: [
+              {
+                delta: {
+                  content: 'Claude ',
+                },
+              },
+            ],
+          };
+          throw new Error('stream api error');
         },
-        status: 200,
-        statusText: 'OK',
-        headers: {},
-        config: {} as any,
-      };
-
-      mockHttpService.post.mockReturnValue(of(mockResponse));
-
-      const generator = adapter.streamGenerate('test prompt', {
-        sessionId: 'test',
       });
 
-      const result = await generator.next();
-      expect(result.value).toBe('streamed content');
+      const generator = adapter.streamGenerate('test prompt', mockContext);
+
+      await expect(generator.next()).resolves.toEqual({ value: 'Claude ', done: false });
+      expect(adapter.getStatus()).toBe(AgentStatus.BUSY);
+      await expect(generator.next()).rejects.toThrow('stream api error');
+      expect(adapter.getStatus()).toBe(AgentStatus.ONLINE);
+    });
+
+    it('skips chunks where delta or content is missing or null', async () => {
+      createMock.mockResolvedValue(createMixedStream());
+
+      const generator = adapter.streamGenerate('test prompt', mockContext);
+
+      await expect(generator.next()).resolves.toEqual({ value: 'Claude ', done: false });
+      await expect(generator.next()).resolves.toEqual({ value: 'content', done: false });
+      await expect(generator.next()).resolves.toEqual({ value: undefined, done: true });
+      expect(adapter.getStatus()).toBe(AgentStatus.ONLINE);
     });
   });
 
   describe('healthCheck', () => {
-    it('should return true when status is not ERROR', async () => {
-      const result = await adapter.healthCheck();
-      expect(result).toBe(true);
+    it('returns true when status is not ERROR', async () => {
+      await expect(adapter.healthCheck()).resolves.toBe(true);
     });
   });
 
   describe('getStatus', () => {
-    it('should return current status', () => {
+    it('returns current status', () => {
       expect(adapter.getStatus()).toBe(AgentStatus.ONLINE);
     });
   });
 
   describe('shouldRespond', () => {
-    it('should always return true', async () => {
-      const mockMessage = {} as any;
-      const mockContext = {} as any;
-      const result = await adapter.shouldRespond(mockMessage, mockContext);
+    it('always returns true', async () => {
+      const result = await adapter.shouldRespond({} as any, {} as any);
       expect(result.should).toBe(true);
     });
   });
 
   describe('adapter properties', () => {
-    it('should have correct id', () => {
+    it('has correct id, name, model, and callType', () => {
       expect(adapter.id).toBe('claude-001');
-    });
-
-    it('should have correct name', () => {
       expect(adapter.name).toBe('Claude');
-    });
-
-    it('should have correct model', () => {
-      expect(adapter.model).toBe('anthropic/claude-3-sonnet');
-    });
-
-    it('should have callType http', () => {
+      expect(adapter.model).toBe('MiniMax-M2.5');
       expect(adapter.callType).toBe('http');
     });
   });

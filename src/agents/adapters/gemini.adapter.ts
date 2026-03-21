@@ -1,8 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { HttpService } from '@nestjs/axios';
-import { firstValueFrom } from 'rxjs';
-import { AxiosResponse } from 'axios';
+import OpenAI from 'openai';
 import {
   ILLMAdapter,
   AgentContext,
@@ -12,18 +10,14 @@ import {
 } from '../interfaces/llm-adapter.interface';
 import { Message } from '../../common/types';
 
-interface OpenRouterResponse {
+type ChatMessage = { role: 'system' | 'user' | 'assistant'; content: string };
+type StreamChunk = {
   choices?: Array<{
-    message?: {
-      content?: string;
-    };
+    delta?: {
+      content?: string | null;
+    } | null;
   }>;
-  usage?: {
-    prompt_tokens?: number;
-    completion_tokens?: number;
-    total_tokens?: number;
-  };
-}
+};
 
 @Injectable()
 export class GeminiAdapter implements ILLMAdapter {
@@ -31,46 +25,38 @@ export class GeminiAdapter implements ILLMAdapter {
 
   readonly id = 'gemini-001';
   readonly name = 'Gemini';
-  readonly model = 'gemini-2.0-flash-thinking';
+  readonly model = 'qwen3-32b';
   readonly type = 'gemini';
   readonly role = '创意发散与视觉设计';
   readonly capabilities = ['创意建议', 'UI/UX设计', '视觉方案', '用户体验'];
   readonly callType: 'http' = 'http';
 
   private status: AgentStatus = AgentStatus.ONLINE;
-  private apiUrl = 'https://openrouter.ai/api/v1/chat/completions';
+  private client: OpenAI;
 
-  constructor(
-    private readonly httpService: HttpService,
-    private readonly configService: ConfigService,
-  ) {}
+  constructor(private readonly configService: ConfigService) {
+    this.client = new OpenAI({
+      apiKey: this.configService.getOrThrow<string>('QWEN_API_KEY'),
+      baseURL: this.configService.getOrThrow<string>('QWEN_BASE_URL'),
+    });
+  }
 
   async generate(prompt: string, context: AgentContext): Promise<AgentResponse> {
     this.status = AgentStatus.BUSY;
 
     try {
       const messages = this.buildMessages(prompt, context);
-      const apiKey = this.configService.get<string>('gemini.apiKey') || '';
+      this.logger.log(`Gemini messages history: ${JSON.stringify(messages)}`);
 
-      const response: AxiosResponse<OpenRouterResponse> = await firstValueFrom(
-        this.httpService.post<OpenRouterResponse>(
-          this.apiUrl,
-          {
-            model: this.model,
-            messages,
-            temperature: 0.8,
-            max_tokens: 4000,
-          },
-          {
-            headers: {
-              Authorization: `Bearer ${apiKey}`,
-              'Content-Type': 'application/json',
-            },
-          },
-        ),
-      );
+      const response = await this.client.chat.completions.create({
+        model: this.model,
+        messages: messages as ChatMessage[],
+        temperature: 0.8,
+        max_tokens: 4000,
+      });
 
-      const content = response.data.choices?.[0]?.message?.content ?? '';
+      const content = response.choices[0]?.message?.content ?? '';
+      this.logger.log(`Gemini generate response: ${content}`);
 
       return {
         content,
@@ -85,8 +71,32 @@ export class GeminiAdapter implements ILLMAdapter {
   }
 
   async *streamGenerate(prompt: string, context: AgentContext): AsyncGenerator<string> {
-    const response = await this.generate(prompt, context);
-    yield response.content;
+    this.status = AgentStatus.BUSY;
+
+    try {
+      const messages = this.buildMessages(prompt, context);
+      this.logger.log(`Gemini stream messages history: ${JSON.stringify(messages)}`);
+
+      const stream = await this.client.chat.completions.create({
+        model: this.model,
+        messages: messages as ChatMessage[],
+        temperature: 0.8,
+        max_tokens: 4000,
+        stream: true,
+      });
+
+      for await (const chunk of stream as AsyncIterable<StreamChunk>) {
+        const content = chunk.choices?.[0]?.delta?.content ?? '';
+        if (content) {
+          yield content;
+        }
+      }
+    } catch (error) {
+      this.logger.error(`Gemini streamGenerate error: ${error.message}`);
+      throw error;
+    } finally {
+      this.status = AgentStatus.ONLINE;
+    }
   }
 
   async shouldRespond(message: Message, context: AgentContext): Promise<DecisionResult> {
@@ -101,7 +111,7 @@ export class GeminiAdapter implements ILLMAdapter {
     return this.status;
   }
 
-  private buildMessages(prompt: string, context: AgentContext): Array<{ role: string; content: string }> {
+  private buildMessages(prompt: string, context: AgentContext): ChatMessage[] {
     const systemPrompt = `你是 Gemini，一个富有创意的设计师和产品顾问。
 你的职责是：
 1. 提供创意建议
@@ -109,7 +119,7 @@ export class GeminiAdapter implements ILLMAdapter {
 3. 优化用户体验
 4. 提出产品改进方向`;
 
-    const messages: Array<{ role: string; content: string }> = [{ role: 'system', content: systemPrompt }];
+    const messages: ChatMessage[] = [{ role: 'system', content: systemPrompt }];
 
     if (context.conversationHistory?.length) {
       const recentMessages = context.conversationHistory.slice(-10);

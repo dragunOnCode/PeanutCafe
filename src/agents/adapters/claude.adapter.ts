@@ -1,8 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { HttpService } from '@nestjs/axios';
-import { firstValueFrom } from 'rxjs';
-import { AxiosResponse } from 'axios';
+import OpenAI from 'openai';
 import {
   ILLMAdapter,
   AgentContext,
@@ -12,18 +10,14 @@ import {
 } from '../interfaces/llm-adapter.interface';
 import { Message } from '../../common/types';
 
-interface OpenRouterResponse {
+type ChatMessage = { role: 'system' | 'user' | 'assistant'; content: string };
+type StreamChunk = {
   choices?: Array<{
-    message?: {
-      content?: string;
-    };
+    delta?: {
+      content?: string | null;
+    } | null;
   }>;
-  usage?: {
-    prompt_tokens?: number;
-    completion_tokens?: number;
-    total_tokens?: number;
-  };
-}
+};
 
 @Injectable()
 export class ClaudeAdapter implements ILLMAdapter {
@@ -31,49 +25,43 @@ export class ClaudeAdapter implements ILLMAdapter {
 
   readonly id = 'claude-001';
   readonly name = 'Claude';
-  readonly model = 'anthropic/claude-3-sonnet';
+  readonly model = 'MiniMax-M2.5';
   readonly type = 'claude';
   readonly role = '架构设计与编码实现';
   readonly capabilities = ['架构设计', '代码生成', '技术选型', '重构'];
   readonly callType: 'http' = 'http';
 
   private status: AgentStatus = AgentStatus.ONLINE;
-  private apiUrl = 'https://openrouter.ai/api/v1/chat/completions';
+  private client: OpenAI;
 
-  constructor(
-    private readonly httpService: HttpService,
-    private readonly configService: ConfigService,
-  ) {}
+  constructor(private readonly configService: ConfigService) {
+    this.client = new OpenAI({
+      apiKey: this.configService.getOrThrow<string>('MINIMAX_API_KEY'),
+      baseURL: this.configService.getOrThrow<string>('MINIMAX_BASE_URL'),
+    });
+    this.logger.log(
+      `ClaudeAdapter initialized with model: ${this.model}, baseURL: ${this.configService.getOrThrow<string>('MINIMAX_BASE_URL')}`,
+    );
+  }
 
   async generate(prompt: string, context: AgentContext): Promise<AgentResponse> {
     this.status = AgentStatus.BUSY;
 
     try {
       const messages = this.buildMessages(prompt, context);
-      const apiKey = this.configService.get<string>('openrouter.apiKey') || '';
+      this.logger.log(`Claude messages history: ${JSON.stringify(messages)}`);
 
-      const response: AxiosResponse<OpenRouterResponse> = await firstValueFrom(
-        this.httpService.post<OpenRouterResponse>(
-          this.apiUrl,
-          {
-            model: this.model,
-            messages,
-            temperature: 0.7,
-            max_tokens: 4000,
-          },
-          {
-            headers: {
-              Authorization: `Bearer ${apiKey}`,
-              'Content-Type': 'application/json',
-              'HTTP-Referer': 'https://lobster.com',
-              'X-Title': 'Lobster Coding Assistant',
-            },
-          },
-        ),
-      );
+      const response = await this.client.chat.completions.create({
+        model: this.model,
+        messages: messages as ChatMessage[],
+        temperature: 0.7,
+        max_tokens: 4000,
+      });
 
-      const content = response.data.choices?.[0]?.message?.content ?? '';
-      const usage = response.data.usage ?? { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+      const content = response.choices[0]?.message?.content ?? '';
+      this.logger.log(`Claude generate response: ${content}`);
+
+      const usage = response.usage ?? { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
 
       return {
         content,
@@ -93,8 +81,32 @@ export class ClaudeAdapter implements ILLMAdapter {
   }
 
   async *streamGenerate(prompt: string, context: AgentContext): AsyncGenerator<string> {
-    const response = await this.generate(prompt, context);
-    yield response.content;
+    this.status = AgentStatus.BUSY;
+
+    try {
+      const messages = this.buildMessages(prompt, context);
+      this.logger.log(`Claude stream messages history: ${JSON.stringify(messages)}`);
+
+      const stream = await this.client.chat.completions.create({
+        model: this.model,
+        messages: messages as ChatMessage[],
+        temperature: 0.7,
+        max_tokens: 4000,
+        stream: true,
+      });
+
+      for await (const chunk of stream as AsyncIterable<StreamChunk>) {
+        const content = chunk.choices?.[0]?.delta?.content ?? '';
+        if (content) {
+          yield content;
+        }
+      }
+    } catch (error) {
+      this.logger.error(`Claude streamGenerate error: ${error.message}`);
+      throw error;
+    } finally {
+      this.status = AgentStatus.ONLINE;
+    }
   }
 
   async shouldRespond(message: Message, context: AgentContext): Promise<DecisionResult> {
@@ -109,7 +121,7 @@ export class ClaudeAdapter implements ILLMAdapter {
     return this.status;
   }
 
-  private buildMessages(prompt: string, context: AgentContext): Array<{ role: string; content: string }> {
+  private buildMessages(prompt: string, context: AgentContext): ChatMessage[] {
     const systemPrompt = `你是 Claude，一个专业的软件架构师和编码专家。
 你的职责是：
 1. 设计系统架构
@@ -117,7 +129,7 @@ export class ClaudeAdapter implements ILLMAdapter {
 3. 提供技术选型建议
 4. 进行代码重构`;
 
-    const messages: Array<{ role: string; content: string }> = [{ role: 'system', content: systemPrompt }];
+    const messages: ChatMessage[] = [{ role: 'system', content: systemPrompt }];
 
     if (context.conversationHistory?.length) {
       const recentMessages = context.conversationHistory.slice(-10);

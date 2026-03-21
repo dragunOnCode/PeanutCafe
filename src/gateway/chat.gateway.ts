@@ -9,6 +9,7 @@ import {
   ConnectedSocket,
 } from '@nestjs/websockets';
 import { Logger, UsePipes, ValidationPipe, Injectable } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Server, Socket } from 'socket.io';
@@ -20,6 +21,7 @@ import { ShortTermMemoryService, MemoryEntry } from '../memory/services/short-te
 import { TranscriptService, TranscriptEntry } from '../workspace/services/transcript.service';
 import { WorkspaceService } from '../workspace/services/workspace.service';
 import { MessageEntity } from '../database/entities/message.entity';
+import { SessionEntity } from '../database/entities/session.entity';
 import { AgentPriorityService } from '../agents/services/agent-priority.service';
 import { ClaudeAdapter } from '../agents/adapters/claude.adapter';
 import { CodexAdapter } from '../agents/adapters/codex.adapter';
@@ -48,6 +50,8 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     private readonly workspaceService: WorkspaceService,
     @InjectRepository(MessageEntity)
     private readonly messageRepository: Repository<MessageEntity>,
+    @InjectRepository(SessionEntity)
+    private readonly sessionRepository: Repository<SessionEntity>,
     private readonly priorityService: AgentPriorityService,
     private readonly claudeAdapter: ClaudeAdapter,
     private readonly codexAdapter: CodexAdapter,
@@ -70,11 +74,11 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
 
   handleConnection(client: Socket) {
     const sessionId = client.handshake.query.sessionId as string;
-    const userId = client.handshake.query.userId as string;
+    const userId = (client.handshake.query.userId as string | undefined) ?? null;
 
-    if (!sessionId || !userId) {
-      this.logger.warn(`客户端 ${client.id} 缺少 sessionId 或 userId，断开连接`);
-      client.emit('error', { message: '缺少 sessionId 或 userId 参数' });
+    if (!sessionId) {
+      this.logger.warn(`客户端 ${client.id} 缺少 sessionId，断开连接`);
+      client.emit('error', { message: '缺少 sessionId 参数' });
       client.disconnect();
       return;
     }
@@ -82,7 +86,7 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     void client.join(`session:${sessionId}`);
     this.sessionManager.addClient(sessionId, client);
 
-    this.logger.log(`客户端连接: ${client.id} (User: ${userId}, Session: ${sessionId})`);
+    this.logger.log(`客户端连接: ${client.id} (User: ${userId ?? '—'}, Session: ${sessionId})`);
 
     client.emit('connection:established', {
       clientId: client.id,
@@ -117,8 +121,8 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     @ConnectedSocket() client: Socket,
     @MessageBody() data: SendMessageDto,
   ): Promise<{ success: boolean; messageId: string }> {
-    const userId = client.handshake.query.userId as string;
-    const sessionId = data.sessionId;
+    const userId = (client.handshake.query.userId as string | undefined) ?? null;
+    const sessionId = data.sessionId.trim();
 
     const parsed = this.messageRouter.parseMessage(data.content);
     const routeResult = this.agentRouter.route(parsed.mentionedAgents, data.content);
@@ -135,10 +139,12 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
 
     this.server.to(`session:${sessionId}`).emit('message:received', userMessage);
 
+    await this.ensureSessionRow(sessionId);
+
     const messageEntity = this.messageRepository.create({
       id: userMessage.id,
       sessionId,
-      userId,
+      userId: null,
       role: 'user',
       content: data.content,
       mentionedAgents: parsed.mentionedAgents,
@@ -199,7 +205,7 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     agent: {
       id: string;
       name: string;
-      generate: (prompt: string, context: AgentContext) => Promise<{ content: string; tokenUsage?: { total: number } }>;
+      streamGenerate: (prompt: string, context: AgentContext) => AsyncGenerator<string>;
     },
     prompt: string,
   ): Promise<void> {
@@ -227,38 +233,48 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
         conversationHistory,
       };
 
-      const response = await agent.generate(prompt, context);
-
-      if (response.tokenUsage?.total) {
-        this.priorityService.recordUsage(agent.id, response.tokenUsage.total);
+      let fullContent = '';
+      for await (const chunk of agent.streamGenerate(prompt, context)) {
+        fullContent += chunk;
+        this.server.to(`session:${sessionId}`).emit('agent:stream', {
+          agentId: agent.id,
+          agentName: agent.name,
+          delta: chunk,
+          timestamp: new Date(),
+        });
       }
-
-      this.server.to(`session:${sessionId}`).emit('agent:stream', {
-        agentId: agent.id,
-        agentName: agent.name,
-        delta: response.content,
-        timestamp: new Date(),
-      });
 
       this.server.to(`session:${sessionId}`).emit('agent:stream:end', {
         agentId: agent.id,
         agentName: agent.name,
-        fullContent: response.content,
+        fullContent,
         timestamp: new Date(),
       });
 
+      if (!fullContent.trim()) {
+        return;
+      }
+
+      const estimatedUsage = this.estimateStreamTokenUsage(fullContent);
+      if (estimatedUsage > 0) {
+        this.priorityService.recordUsage(agent.id, estimatedUsage);
+      }
+
+      await this.ensureSessionRow(sessionId);
+
       const messageEntity = this.messageRepository.create({
         sessionId,
+        userId: null,
         agentId: agent.id,
         agentName: agent.name,
         role: 'assistant',
-        content: response.content,
+        content: fullContent,
       });
       await this.messageRepository.save(messageEntity);
 
       await this.shortTermMemory.append(sessionId, {
         role: 'assistant',
-        content: response.content,
+        content: fullContent,
         agentId: agent.id,
         agentName: agent.name,
         timestamp: new Date().toISOString(),
@@ -266,22 +282,67 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
 
       await this.transcriptService.appendEntry(sessionId, {
         role: 'assistant',
-        content: response.content,
+        content: fullContent,
         agentId: agent.id,
         agentName: agent.name,
         timestamp: new Date().toISOString(),
       });
-    } catch (error) {
+    } catch (error: unknown) {
       this.server.to(`session:${sessionId}`).emit('agent:error', {
         agentId: agent.id,
         agentName: agent.name,
-        error: error.message,
+        error: this.getErrorMessage(error),
         timestamp: new Date(),
       });
     }
   }
 
+  private estimateStreamTokenUsage(content: string): number {
+    const normalized = content.trim();
+    if (!normalized) {
+      return 0;
+    }
+
+    // Streaming adapters do not expose token usage, so use a simple character-based estimate.
+    return Math.ceil(normalized.length / 4);
+  }
+
+  private getErrorMessage(error: unknown): string {
+    if (error instanceof Error) {
+      return error.message;
+    }
+
+    if (typeof error === 'string') {
+      return error;
+    }
+
+    if (error === null || error === undefined) {
+      return 'Unknown error';
+    }
+
+    try {
+      return JSON.stringify(error);
+    } catch {
+      return String(error);
+    }
+  }
+
+  /** 调试对话：不依赖 users 表；messages.user_id 存 null。并确保 sessions 存在以满足 session 外键。 */
+  private async ensureSessionRow(sessionId: string): Promise<void> {
+    const exists = await this.sessionRepository.exist({ where: { id: sessionId } });
+    if (exists) return;
+    await this.sessionRepository.save(
+      this.sessionRepository.create({
+        id: sessionId,
+        title: 'Conversation',
+        ownerId: null,
+        participants: [],
+        status: 'active',
+      }),
+    );
+  }
+
   private generateMessageId(): string {
-    return `msg_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+    return randomUUID();
   }
 }
