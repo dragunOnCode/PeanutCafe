@@ -17,7 +17,7 @@ import { SessionManager } from './session.manager';
 import { MessageRouter } from './message.router';
 import { AgentRouter } from './agent-router';
 import { SendMessageDto } from './dto/send-message.dto';
-import { ShortTermMemoryService, MemoryEntry } from '../memory/services/short-term-memory.service';
+import { ConversationHistoryService } from '../memory/services/conversation-history.service';
 import { TranscriptService, TranscriptEntry } from '../workspace/services/transcript.service';
 import { WorkspaceService } from '../workspace/services/workspace.service';
 import { MessageEntity } from '../database/entities/message.entity';
@@ -45,7 +45,7 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     private readonly sessionManager: SessionManager,
     private readonly messageRouter: MessageRouter,
     private readonly agentRouter: AgentRouter,
-    private readonly shortTermMemory: ShortTermMemoryService,
+    private readonly conversationHistoryService: ConversationHistoryService,
     private readonly transcriptService: TranscriptService,
     private readonly workspaceService: WorkspaceService,
     @InjectRepository(MessageEntity)
@@ -151,7 +151,7 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     });
     await this.messageRepository.save(messageEntity);
 
-    await this.shortTermMemory.append(sessionId, {
+    await this.conversationHistoryService.append(sessionId, {
       role: 'user',
       content: data.content,
       timestamp: new Date().toISOString(),
@@ -217,8 +217,8 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     });
 
     try {
-      const shortTermMemory = await this.shortTermMemory.get(sessionId);
-      const conversationHistory = shortTermMemory.map((m, idx) => ({
+      const historyContext = await this.conversationHistoryService.getContext(sessionId, agent.id);
+      const conversationHistory = historyContext.messages.map((m, idx) => ({
         id: `msg_mem_${idx}`,
         sessionId,
         role: m.role as 'user' | 'assistant',
@@ -272,7 +272,7 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       });
       await this.messageRepository.save(messageEntity);
 
-      await this.shortTermMemory.append(sessionId, {
+      await this.conversationHistoryService.append(sessionId, {
         role: 'assistant',
         content: fullContent,
         agentId: agent.id,

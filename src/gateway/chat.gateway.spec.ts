@@ -7,7 +7,7 @@ describe('ChatGateway streaming agent responses', () => {
 
   let gateway: ChatGateway;
   let serverEmit: jest.Mock;
-  let shortTermMemory: { get: jest.Mock; append: jest.Mock };
+  let conversationHistoryService: { getContext: jest.Mock; append: jest.Mock };
   let transcriptService: { appendEntry: jest.Mock };
   let messageRepository: { create: jest.Mock; save: jest.Mock };
   let sessionRepository: { exist: jest.Mock; create: jest.Mock; save: jest.Mock };
@@ -15,14 +15,17 @@ describe('ChatGateway streaming agent responses', () => {
 
   beforeEach(() => {
     serverEmit = jest.fn();
-    shortTermMemory = {
-      get: jest.fn().mockResolvedValue([
-        {
-          role: 'user',
-          content: 'previous user message',
-          timestamp: '2026-03-21T00:00:00.000Z',
-        },
-      ]),
+    conversationHistoryService = {
+      getContext: jest.fn().mockResolvedValue({
+        sessionId,
+        messages: [
+          {
+            role: 'user',
+            content: 'previous user message',
+            timestamp: '2026-03-21T00:00:00.000Z',
+          },
+        ],
+      }),
       append: jest.fn().mockResolvedValue(undefined),
     };
     transcriptService = {
@@ -46,7 +49,7 @@ describe('ChatGateway streaming agent responses', () => {
       { addClient: jest.fn(), removeClient: jest.fn(), getActiveSessions: jest.fn(), getActiveClientCount: jest.fn() } as never,
       { parseMessage: jest.fn(), route: jest.fn() } as never,
       { registerAgent: jest.fn() } as never,
-      shortTermMemory as never,
+      conversationHistoryService as never,
       transcriptService as never,
       {} as never,
       messageRepository as never,
@@ -106,8 +109,8 @@ describe('ChatGateway streaming agent responses', () => {
       }),
     );
 
-    expect(shortTermMemory.append).toHaveBeenCalledTimes(1);
-    expect(shortTermMemory.append).toHaveBeenCalledWith(
+    expect(conversationHistoryService.append).toHaveBeenCalledTimes(1);
+    expect(conversationHistoryService.append).toHaveBeenCalledWith(
       sessionId,
       expect.objectContaining({
         role: 'assistant',
@@ -160,7 +163,7 @@ describe('ChatGateway streaming agent responses', () => {
     );
 
     expect(messageRepository.save).not.toHaveBeenCalled();
-    expect(shortTermMemory.append).not.toHaveBeenCalled();
+    expect(conversationHistoryService.append).not.toHaveBeenCalled();
     expect(transcriptService.appendEntry).not.toHaveBeenCalled();
     expect(priorityService.recordUsage).not.toHaveBeenCalled();
   });
@@ -210,7 +213,7 @@ describe('ChatGateway streaming agent responses', () => {
     ]);
 
     expect(messageRepository.save).not.toHaveBeenCalled();
-    expect(shortTermMemory.append).not.toHaveBeenCalled();
+    expect(conversationHistoryService.append).not.toHaveBeenCalled();
     expect(transcriptService.appendEntry).not.toHaveBeenCalled();
     expect(priorityService.recordUsage).not.toHaveBeenCalled();
   });
