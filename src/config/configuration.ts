@@ -26,3 +26,10 @@ export const appConfig = registerAs('app', () => ({
   port: parseInt(process.env.PORT || '3000', 10),
   nodeEnv: process.env.NODE_ENV || 'development',
 }));
+
+export const memoryConfig = registerAs('memory', () => ({
+  redis: {
+    ttl: parseInt(process.env.MEMORY_REDIS_TTL || '300', 10),
+  },
+  maxHistory: parseInt(process.env.MEMORY_MAX_HISTORY || '6', 10),
+}));
