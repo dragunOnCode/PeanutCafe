@@ -8,7 +8,9 @@ import {
   MessageBody,
   ConnectedSocket,
 } from '@nestjs/websockets';
-import { Logger, UsePipes, ValidationPipe } from '@nestjs/common';
+import { Logger, UsePipes, ValidationPipe, Injectable } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
 import { Server, Socket } from 'socket.io';
 import { SessionManager } from './session.manager';
 import { MessageRouter } from './message.router';
@@ -17,7 +19,7 @@ import { SendMessageDto } from './dto/send-message.dto';
 import { ShortTermMemoryService, MemoryEntry } from '../memory/services/short-term-memory.service';
 import { TranscriptService, TranscriptEntry } from '../workspace/services/transcript.service';
 import { WorkspaceService } from '../workspace/services/workspace.service';
-import { MessagePersistenceService } from '../database/services/message-persistence.service';
+import { MessageEntity } from '../database/entities/message.entity';
 import { AgentPriorityService } from '../agents/services/agent-priority.service';
 import { ClaudeAdapter } from '../agents/adapters/claude.adapter';
 import { CodexAdapter } from '../agents/adapters/codex.adapter';
@@ -44,7 +46,8 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     private readonly shortTermMemory: ShortTermMemoryService,
     private readonly transcriptService: TranscriptService,
     private readonly workspaceService: WorkspaceService,
-    private readonly messagePersistence: MessagePersistenceService,
+    @InjectRepository(MessageEntity)
+    private readonly messageRepository: Repository<MessageEntity>,
     private readonly priorityService: AgentPriorityService,
     private readonly claudeAdapter: ClaudeAdapter,
     private readonly codexAdapter: CodexAdapter,
@@ -132,13 +135,15 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
 
     this.server.to(`session:${sessionId}`).emit('message:received', userMessage);
 
-    await this.messagePersistence.save({
+    const messageEntity = this.messageRepository.create({
+      id: userMessage.id,
       sessionId,
       userId,
       role: 'user',
       content: data.content,
       mentionedAgents: parsed.mentionedAgents,
     });
+    await this.messageRepository.save(messageEntity);
 
     await this.shortTermMemory.append(sessionId, {
       role: 'user',
@@ -161,11 +166,17 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
 
   @SubscribeMessage('session:history')
   handleHistoryRequest(@ConnectedSocket() client: Socket, @MessageBody() data: { sessionId: string; limit?: number }) {
-    // TODO: 集成数据库查询 (Task 8)
-    client.emit('chat:history', {
-      sessionId: data.sessionId,
-      messages: [],
-      total: 0,
+    const messages = this.messageRepository.find({
+      where: { sessionId: data.sessionId },
+      order: { createdAt: 'DESC' },
+      take: data.limit || 50,
+    });
+    void messages.then((msgs) => {
+      client.emit('chat:history', {
+        sessionId: data.sessionId,
+        messages: msgs.reverse(),
+        total: msgs.length,
+      });
     });
   }
 
@@ -236,13 +247,14 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
         timestamp: new Date(),
       });
 
-      await this.messagePersistence.save({
+      const messageEntity = this.messageRepository.create({
         sessionId,
         agentId: agent.id,
         agentName: agent.name,
         role: 'assistant',
         content: response.content,
       });
+      await this.messageRepository.save(messageEntity);
 
       await this.shortTermMemory.append(sessionId, {
         role: 'assistant',

@@ -6,10 +6,10 @@ import { AgentPriorityService } from './services/agent-priority.service';
 import { ClaudeAdapter } from './adapters/claude.adapter';
 import { CodexAdapter } from './adapters/codex.adapter';
 import { GeminiAdapter } from './adapters/gemini.adapter';
-import { openrouterConfig, geminiConfig } from '../config/configuration';
+import { apikeyConfig, geminiConfig } from '../config/configuration';
 
 @Module({
-  imports: [HttpModule, ConfigModule.forFeature(openrouterConfig), ConfigModule.forFeature(geminiConfig)],
+  imports: [HttpModule, ConfigModule.forFeature(apikeyConfig), ConfigModule.forFeature(geminiConfig)],
   providers: [AgentConfigService, AgentPriorityService, ClaudeAdapter, CodexAdapter, GeminiAdapter],
   exports: [AgentConfigService, AgentPriorityService, ClaudeAdapter, CodexAdapter, GeminiAdapter],
 })

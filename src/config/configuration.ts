@@ -14,7 +14,7 @@ export const databaseConfig = registerAs('database', () => ({
   database: process.env.DB_DATABASE || 'lobster',
 }));
 
-export const openrouterConfig = registerAs('openrouter', () => ({
+export const apikeyConfig = registerAs('openrouter', () => ({
   apiKey: process.env.OPENROUTER_API_KEY || '',
 }));
 

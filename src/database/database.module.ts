@@ -1,30 +1,28 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ConfigModule, ConfigService } from '@nestjs/config';
-import { Message } from './entities/message.entity';
-import { MessagePersistenceService } from './services/message-persistence.service';
+import { MessageEntity, SessionEntity, UserEntity } from './entities';
 import { databaseConfig } from '../config/configuration';
 
 @Module({
   imports: [
-    ConfigModule.forFeature(databaseConfig),
+    ConfigModule,
     TypeOrmModule.forRootAsync({
-      imports: [ConfigModule.forFeature(databaseConfig)],
       inject: [ConfigService],
       useFactory: (configService: ConfigService) => ({
         type: 'postgres',
-        host: configService.get<string>('database.host'),
-        port: configService.get<number>('database.port'),
-        username: configService.get<string>('database.username'),
-        password: configService.get<string>('database.password'),
-        database: configService.get<string>('database.database'),
-        entities: [Message],
+        host: configService.getOrThrow<string>('DB_HOST'),
+        port: configService.getOrThrow<number>('DB_PORT'),
+        username: configService.getOrThrow<string>('DB_USERNAME'),
+        password: configService.getOrThrow<string>('DB_PASSWORD'),
+        database: configService.getOrThrow<string>('DB_DATABASE'),
+        entities: [UserEntity, SessionEntity, MessageEntity],
+        migrations: ['dist/database/migrations/*.js'],
         synchronize: true,
       }),
     }),
-    TypeOrmModule.forFeature([Message]),
+    TypeOrmModule.forFeature([UserEntity, SessionEntity, MessageEntity]),
   ],
-  providers: [MessagePersistenceService],
-  exports: [MessagePersistenceService],
+  exports: [TypeOrmModule],
 })
 export class DatabaseModule {}

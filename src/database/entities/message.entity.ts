@@ -1,46 +1,44 @@
-import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, Index } from 'typeorm';
-
-export enum MessageRole {
-  USER = 'user',
-  ASSISTANT = 'assistant',
-  SYSTEM = 'system',
-}
+import { Column, CreateDateColumn, Entity, JoinColumn, ManyToOne, PrimaryGeneratedColumn } from 'typeorm';
+import { SessionEntity } from './session.entity';
+import { UserEntity } from './user.entity';
 
 @Entity('messages')
-@Index(['sessionId', 'createdAt'])
-export class Message {
+export class MessageEntity {
   @PrimaryGeneratedColumn('uuid')
-  id: string;
+  id!: string;
 
-  @Column()
-  @Index()
-  sessionId: string;
+  @Column({ name: 'session_id', type: 'uuid' })
+  sessionId!: string;
 
-  @Column({ nullable: true })
-  userId: string;
+  @ManyToOne(() => SessionEntity, (session) => session.messages, { onDelete: 'CASCADE' })
+  @JoinColumn({ name: 'session_id' })
+  session!: SessionEntity;
 
-  @Column({ nullable: true })
-  agentId: string;
+  @Column({ name: 'user_id', type: 'uuid', nullable: true })
+  userId!: string | null;
 
-  @Column({ nullable: true })
-  agentName: string;
+  @ManyToOne(() => UserEntity, (user) => user.messages, { nullable: true, onDelete: 'SET NULL' })
+  @JoinColumn({ name: 'user_id' })
+  user!: UserEntity | null;
 
-  @Column({
-    type: 'enum',
-    enum: MessageRole,
-    default: MessageRole.USER,
-  })
-  role: MessageRole;
+  @Column({ name: 'agent_id', type: 'varchar', length: 50, nullable: true })
+  agentId!: string | null;
 
-  @Column('text')
-  content: string;
+  @Column({ name: 'agent_name', type: 'varchar', length: 50, nullable: true })
+  agentName!: string | null;
 
-  @Column('text', { array: true, default: [] })
-  mentionedAgents: string[];
+  @Column({ length: 20 })
+  role!: string;
+
+  @Column({ type: 'text' })
+  content!: string;
+
+  @Column({ name: 'mentioned_agents', type: 'text', array: true, default: '{}' })
+  mentionedAgents!: string[];
 
   @Column({ type: 'jsonb', nullable: true })
-  metadata: Record<string, unknown>;
+  metadata!: Record<string, unknown> | null;
 
-  @CreateDateColumn()
-  createdAt: Date;
+  @CreateDateColumn({ name: 'created_at', type: 'timestamp' })
+  createdAt!: Date;
 }
