@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { HttpModule } from '@nestjs/axios';
 import { ConfigModule } from '@nestjs/config';
 import { AgentConfigService } from './services/agent-config.service';
@@ -10,9 +10,15 @@ import { ToolRegistry } from './tools/tool-registry';
 import { CommandExecutor } from './tools/command-executor';
 import { ToolExecutorService } from './tools/tool-executor.service';
 import { apikeyConfig, geminiConfig } from '../config/configuration';
+import { McpModule } from '../mcp/mcp.module';
 
 @Module({
-  imports: [HttpModule, ConfigModule.forFeature(apikeyConfig), ConfigModule.forFeature(geminiConfig)],
+  imports: [
+    HttpModule,
+    ConfigModule.forFeature(apikeyConfig),
+    ConfigModule.forFeature(geminiConfig),
+    forwardRef(() => McpModule),
+  ],
   providers: [
     AgentConfigService,
     AgentPriorityService,
@@ -30,6 +36,7 @@ import { apikeyConfig, geminiConfig } from '../config/configuration';
     CodexAdapter,
     GeminiAdapter,
     ToolExecutorService,
+    ToolRegistry,
   ],
 })
 export class AgentsModule {}
