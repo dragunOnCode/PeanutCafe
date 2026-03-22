@@ -1,7 +1,6 @@
 import { Module } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
 import { SessionDeletionQueue } from './session-deletion.queue';
-import { SessionDeletionProcessor } from './session-deletion.processor';
 
 @Module({
   imports: [
@@ -16,7 +15,7 @@ import { SessionDeletionProcessor } from './session-deletion.processor';
       name: 'session-deletion',
     }),
   ],
-  providers: [SessionDeletionQueue, SessionDeletionProcessor],
+  providers: [SessionDeletionQueue],
   exports: [SessionDeletionQueue],
 })
 export class QueueModule {}
