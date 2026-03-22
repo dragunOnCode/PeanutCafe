@@ -2,6 +2,8 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ShortTermMemoryService, MemoryEntry } from './short-term-memory.service';
 
+const MAX_HISTORY_SIZE = 10;
+
 export interface ConversationContext {
   sessionId: string;
   messages: MemoryEntry[];
@@ -17,7 +19,7 @@ export class ConversationHistoryService {
     private readonly shortTermMemory: ShortTermMemoryService,
     private readonly configService: ConfigService,
   ) {
-    this.maxHistory = this.configService.get<number>('memory.maxHistory') || 6;
+    this.maxHistory = this.configService.get<number>('memory.maxHistory') || MAX_HISTORY_SIZE;
   }
 
   async getContext(sessionId: string, agentId?: string): Promise<ConversationContext> {

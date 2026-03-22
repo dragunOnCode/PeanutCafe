@@ -59,11 +59,7 @@ describe('FileLogger', () => {
       expect.stringContaining('service.log'),
       expect.stringMatching(/service\.\d{8}T\d{9}\.log$/),
     );
-    expect(fs.appendFile).toHaveBeenCalledWith(
-      expect.stringContaining('service.log'),
-      expect.any(String),
-      'utf-8',
-    );
+    expect(fs.appendFile).toHaveBeenCalledWith(expect.stringContaining('service.log'), expect.any(String), 'utf-8');
   });
 
   it('should skip file output when disabled', async () => {

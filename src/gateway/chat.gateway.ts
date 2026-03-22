@@ -207,10 +207,7 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
   }
 
   @SubscribeMessage('session:delete')
-  async handleSessionDelete(
-    @ConnectedSocket() client: Socket,
-    @MessageBody() data: { sessionId: string },
-  ) {
+  async handleSessionDelete(@ConnectedSocket() client: Socket, @MessageBody() data: { sessionId: string }) {
     const { sessionId } = data;
 
     this.server.to(`session:${sessionId}`).emit('session:delete:started', { sessionId });
@@ -219,7 +216,7 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       await this.deletionService.deleteSession(sessionId);
 
       this.server.to(`session:${sessionId}`).emit('session:deleted', { sessionId });
-      this.sessionManager.getSessionClients(sessionId).forEach(c => c.disconnect());
+      this.sessionManager.getSessionClients(sessionId).forEach((c) => c.disconnect());
 
       return { success: true };
     } catch (error) {
@@ -254,7 +251,7 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       const conversationHistory = historyContext.messages.map((m, idx) => ({
         id: `msg_mem_${idx}`,
         sessionId,
-        role: m.role as 'user' | 'assistant',
+        role: m.role,
         content: m.content,
         agentId: m.agentId,
         agentName: m.agentName,

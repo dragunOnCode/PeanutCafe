@@ -74,9 +74,7 @@ describe('TranscriptService', () => {
 
     it('should filter empty lines', async () => {
       const sessionId = 'test-session-3';
-      const entries: TranscriptEntry[] = [
-        { role: 'user', content: 'Hello', timestamp: '2024-01-01T00:00:00.000Z' },
-      ];
+      const entries: TranscriptEntry[] = [{ role: 'user', content: 'Hello', timestamp: '2024-01-01T00:00:00.000Z' }];
 
       (fs.readFile as jest.Mock).mockResolvedValueOnce('\n\n' + JSON.stringify(entries[0]) + '\n');
 

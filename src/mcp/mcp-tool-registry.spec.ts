@@ -20,7 +20,11 @@ describe('McpToolRegistry', () => {
 
   it('should register tools from MCP server', async () => {
     const mockClient = {
+      connect: jest.fn().mockResolvedValue(undefined),
+      disconnect: jest.fn().mockResolvedValue(undefined),
       listTools: jest.fn().mockResolvedValue([{ name: 'web_search', description: 'Search the web', inputSchema: {} }]),
+      callTool: jest.fn().mockResolvedValue('result'),
+      isConnected: jest.fn().mockReturnValue(true),
     };
     serverManager.getClient.mockReturnValue(mockClient);
 

@@ -35,7 +35,9 @@ describe('WorkspaceService', () => {
       const sessionId = 'test-session-2';
       const existingWorkspace: WorkspaceState = {
         sessionId,
-        files: [{ path: 'test.ts', language: 'typescript', author: 'test', createdAt: '2024-01-01', updatedAt: '2024-01-01' }],
+        files: [
+          { path: 'test.ts', language: 'typescript', author: 'test', createdAt: '2024-01-01', updatedAt: '2024-01-01' },
+        ],
         tasks: [{ id: 'task_1', title: 'Test', status: 'pending', createdAt: '2024-01-01' }],
         lastUpdate: '2024-01-01T00:00:00.000Z',
       };

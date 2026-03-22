@@ -1,28 +1,26 @@
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { Readable, Writable } from 'stream';
+import { Logger } from '@nestjs/common';
 import { McpTool } from './mcp.interfaces.js';
 
-interface ClientInfo {
-  name: string;
-  version: string;
-}
-
-export class McpClient {
-  private client: Client;
-  private transport: StdioClientTransport | null = null;
+export class McpClientImpl {
+  private readonly logger = new Logger(McpClientImpl.name);
   private connected = false;
-  private clientInfo: ClientInfo;
+  private requestId = 0;
+  private pendingRequests = new Map<number, { resolve: (value: unknown) => void; reject: (reason: unknown) => void }>();
 
   constructor(
-    private readonly stdout: Readable,
-    private readonly stdin: Writable,
-    clientName = 'PeanutCafe-MCP-Client',
-    clientVersion = '1.0.0',
+    private readonly containerExec: {
+      stdout: NodeJS.ReadableStream;
+      stdin: NodeJS.WritableStream;
+    },
+    private readonly containerId: string,
   ) {
-    this.clientInfo = { name: clientName, version: clientVersion };
-    this.client = new Client(this.clientInfo, {
-      capabilities: {},
+    this.containerExec.stdout.on('data', (data: Buffer) => {
+      this.handleMessage(data.toString());
+    });
+
+    this.containerExec.stdout.on('close', () => {
+      this.connected = false;
+      this.logger.log('MCP client disconnected');
     });
   }
 
@@ -34,49 +32,84 @@ export class McpClient {
     if (this.connected) {
       return;
     }
-
-    this.transport = new StdioClientTransport({
-      command: 'cat',
-      args: [],
-    });
-
-    this.transport.onclose = () => {
-      this.connected = false;
-    };
-
-    await this.client.connect(this.transport);
     this.connected = true;
+    this.logger.log(`Connected to MCP container: ${this.containerId}`);
   }
 
   async disconnect(): Promise<void> {
-    if (!this.connected || !this.transport) {
+    if (!this.connected) {
       return;
     }
-
-    await this.transport.close();
     this.connected = false;
-    this.transport = null;
+    this.pendingRequests.forEach(({ reject }) => {
+      reject(new Error('Disconnected'));
+    });
+    this.pendingRequests.clear();
   }
 
   async listTools(): Promise<McpTool[]> {
-    if (!this.connected) {
-      throw new Error('Client not connected');
-    }
-
-    const result = await this.client.listTools();
-    return result.tools as McpTool[];
+    const response = await this.sendRequest('tools/list', {});
+    return (response as { tools: McpTool[] }).tools || [];
   }
 
   async callTool(name: string, args: Record<string, unknown>): Promise<string> {
-    if (!this.connected) {
-      throw new Error('Client not connected');
-    }
-
-    const result = await this.client.callTool({ name, arguments: args });
-    const content = result.content[0] as { type: string; text?: string };
-    if (content.type === 'text' && content.text) {
-      return content.text;
+    const response = await this.sendRequest('tools/call', {
+      name,
+      arguments: args,
+    });
+    const content = (response as { content: Array<{ type: string; text?: string }> }).content;
+    if (content && content[0]?.type === 'text' && content[0].text) {
+      return content[0].text;
     }
     return JSON.stringify(content);
+  }
+
+  private sendRequest(method: string, params: Record<string, unknown>): Promise<unknown> {
+    return new Promise((resolve, reject) => {
+      if (!this.connected) {
+        reject(new Error('Client not connected'));
+        return;
+      }
+
+      const id = ++this.requestId;
+      const request = {
+        jsonrpc: '2.0',
+        id,
+        method,
+        params,
+      };
+
+      this.pendingRequests.set(id, { resolve, reject });
+      this.containerExec.stdin.write(JSON.stringify(request) + '\n');
+
+      setTimeout(() => {
+        if (this.pendingRequests.has(id)) {
+          this.pendingRequests.delete(id);
+          reject(new Error('Request timeout'));
+        }
+      }, 30000);
+    });
+  }
+
+  private handleMessage(data: string): void {
+    const lines = data.split('\n').filter((line) => line.trim());
+
+    for (const line of lines) {
+      try {
+        const message = JSON.parse(line);
+        if (message.id && this.pendingRequests.has(message.id)) {
+          const { resolve, reject } = this.pendingRequests.get(message.id)!;
+          this.pendingRequests.delete(message.id);
+
+          if (message.error) {
+            reject(new Error(message.error.message || 'MCP error'));
+          } else {
+            resolve(message.result);
+          }
+        }
+      } catch (e) {
+        this.logger.warn(`Failed to parse MCP message: ${data}`);
+      }
+    }
   }
 }

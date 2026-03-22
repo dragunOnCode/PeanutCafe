@@ -2,9 +2,23 @@ import { Injectable, Logger } from '@nestjs/common';
 import { spawn } from 'child_process';
 
 const DEFAULT_ALLOWED_COMMANDS = [
-  'git', 'npm', 'node', 'npx',
-  'python', 'pip',
-  'ls', 'cat', 'find', 'grep', 'echo', 'pwd', 'mkdir', 'touch', 'rm', 'cp', 'mv',
+  'git',
+  'npm',
+  'node',
+  'npx',
+  'python',
+  'pip',
+  'ls',
+  'cat',
+  'find',
+  'grep',
+  'echo',
+  'pwd',
+  'mkdir',
+  'touch',
+  'rm',
+  'cp',
+  'mv',
 ];
 
 const BLOCKED_PATTERNS = [';', '&&', '||', '|', '>', '<', '`', '$', '\n'];
@@ -45,11 +59,7 @@ export class CommandExecutor {
     return true;
   }
 
-  async execute(
-    command: string,
-    args: string[],
-    options?: { cwd?: string; timeout?: number },
-  ): Promise<CommandResult> {
+  async execute(command: string, args: string[], options?: { cwd?: string; timeout?: number }): Promise<CommandResult> {
     if (!this.validateCommand(command, args)) {
       return {
         success: false,

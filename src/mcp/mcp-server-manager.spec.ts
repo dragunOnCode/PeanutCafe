@@ -1,4 +1,5 @@
-import { McpServerManager, ServerStatus } from './mcp-server-manager';
+import { McpServerManager } from './mcp-server-manager';
+import { ServerStatus } from './mcp.interfaces';
 
 describe('McpServerManager', () => {
   let manager: McpServerManager;

@@ -32,7 +32,7 @@ export class ToolExecutorService {
   parseToolCalls(output: string): ToolCall[] {
     const toolCalls: ToolCall[] = [];
     const regex = /<tool_call>/g;
-    let startIndex = 0;
+    const startIndex = 0;
     let match;
 
     while ((match = regex.exec(output)) !== null) {
@@ -162,14 +162,10 @@ export class ToolExecutorService {
         },
       },
       execute: async ({ path }: { path?: string }) => {
-        const dir = path
-          ? join(this.sessionWorkspaceDir, sessionId, path)
-          : join(this.sessionWorkspaceDir, sessionId);
+        const dir = path ? join(this.sessionWorkspaceDir, sessionId, path) : join(this.sessionWorkspaceDir, sessionId);
         try {
           const files = await fs.readdir(dir, { withFileTypes: true });
-          return files
-            .map((f) => `${f.isDirectory() ? '[DIR]' : '[FILE]'} ${f.name}`)
-            .join('\n');
+          return files.map((f) => `${f.isDirectory() ? '[DIR]' : '[FILE]'} ${f.name}`).join('\n');
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
             return `Error: Directory not found: ${path ?? 'session workspace'}`;
@@ -193,11 +189,9 @@ export class ToolExecutorService {
         required: ['command'],
       },
       execute: async ({ command, args }: { command: string; args?: string[] }) => {
-        const result = await this.commandExecutor.execute(
-          command as string,
-          Array.isArray(args) ? args : [],
-          { cwd: join(this.sessionWorkspaceDir, sessionId) },
-        );
+        const result = await this.commandExecutor.execute(command, Array.isArray(args) ? args : [], {
+          cwd: join(this.sessionWorkspaceDir, sessionId),
+        });
         if (!result.success) {
           return `Command failed: ${result.stderr || 'unknown error'}`;
         }

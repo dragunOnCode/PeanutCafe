@@ -2,8 +2,9 @@ import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/commo
 import Docker from 'dockerode';
 import * as fs from 'fs';
 import * as path from 'path';
+import { Readable, Writable } from 'stream';
 import { McpServerConfig, ServerStatus, McpClient, ServerInfo } from './mcp.interfaces';
-import { McpClient as McpClientImpl } from './mcp-client';
+import { McpClientImpl } from './mcp-client';
 
 interface McpConfig {
   mcpServers?: Record<string, McpServerConfig>;
@@ -66,20 +67,18 @@ export class McpServerManager implements OnModuleInit, OnModuleDestroy {
     const containerInfo = await container.inspect();
     const containerId = containerInfo.Id;
 
-    const stdoutStream = await container.attach({
-      stream: true,
-      stdout: true,
-      stderr: false,
+    const exec = await container.exec({
+      AttachStdout: true,
+      AttachStdin: true,
+      Cmd: ['npx', '-y', '@brave/brave-search-mcp-server', '--transport', 'stdio'],
     });
 
-    const stdinStream = await container.attach({
-      stream: true,
-      stdin: true,
-      stdout: false,
-      stderr: false,
-    });
+    const stream = await exec.start({ hijack: true, stdin: true });
 
-    const client = new McpClientImpl(stdoutStream, stdinStream);
+    const client = new McpClientImpl(
+      { stdout: stream as unknown as NodeJS.ReadableStream, stdin: stream as unknown as NodeJS.WritableStream },
+      containerId,
+    );
     await client.connect();
 
     this.servers.set(name, {
@@ -137,5 +136,3 @@ export class McpServerManager implements OnModuleInit, OnModuleDestroy {
     });
   }
 }
-
-export { McpServerConfig, ServerStatus };

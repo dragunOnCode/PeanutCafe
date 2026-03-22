@@ -1,0 +1,7 @@
+TypeScript 概述
+JavaScript 最初是用作客户端的语言。Node.js 的发展也将 JavaScript 标记为新兴的服务器端技术。然而，随着 JavaScript 代码越来越复杂，它变得难以维护和重用。此外，它未能拥抱面向对象、强类型检查和编译时错误检查等特性，导致 JavaScript 无法在企业级作为全功能的服务器端技术上成功。
+TypeScript 应运而生，以填补这一空白。
+
+TypeScript 是什么
+从定义上来说，“TypeScript 是用于应用规模开发的 JavaScript。”
+TypeScript 是一种强类型、面向对象的编译语言。它由微软的 Anders Hejlsberg （也是 C# 设计者）设计。TypeScript 既是一种语言，也是一组工具。TypeScript 是编译为 JavaScript 的一种有类型的超集。换句话说，TypeScript 是 JavaScript 加上一些额外的功能。

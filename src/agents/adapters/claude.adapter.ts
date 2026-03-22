@@ -56,7 +56,7 @@ export class ClaudeAdapter implements ILLMAdapter {
 
       const response = await this.client.chat.completions.create({
         model: this.model,
-        messages: messages as ChatMessage[],
+        messages: messages,
         temperature: 0.7,
         max_tokens: 4000,
       });
@@ -89,13 +89,13 @@ export class ClaudeAdapter implements ILLMAdapter {
     this.toolExecutorService.registerSessionTools(context.sessionId);
 
     try {
-      let currentMessages = [...this.buildMessages(context)];
+      const currentMessages = [...this.buildMessages(context)];
       let fullResponse = '';
 
       while (true) {
         const stream = await this.client.chat.completions.create({
           model: this.model,
-          messages: currentMessages as ChatMessage[],
+          messages: currentMessages,
           temperature: 0.7,
           max_tokens: 4000,
           stream: true,

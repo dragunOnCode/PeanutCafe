@@ -56,7 +56,13 @@ describe('ChatGateway streaming agent responses', () => {
     };
 
     gateway = new ChatGateway(
-      { addClient: jest.fn(), removeClient: jest.fn(), getActiveSessions: jest.fn(), getActiveClientCount: jest.fn(), getSessionClients: jest.fn().mockReturnValue([]) } as never,
+      {
+        addClient: jest.fn(),
+        removeClient: jest.fn(),
+        getActiveSessions: jest.fn(),
+        getActiveClientCount: jest.fn(),
+        getSessionClients: jest.fn().mockReturnValue([]),
+      } as never,
       { parseMessage: jest.fn(), route: jest.fn() } as never,
       { registerAgent: jest.fn() } as never,
       conversationHistoryService as never,
@@ -94,14 +100,18 @@ describe('ChatGateway streaming agent responses', () => {
       }),
     };
 
-    await (gateway as unknown as {
-      handleAgentResponse: (id: string, agentArg: typeof agent) => Promise<void>;
-    }).handleAgentResponse(sessionId, agent);
+    await (
+      gateway as unknown as {
+        handleAgentResponse: (id: string, agentArg: typeof agent) => Promise<void>;
+      }
+    ).handleAgentResponse(sessionId, agent);
 
     expect(agent.generate).not.toHaveBeenCalled();
     expect(agent.streamGenerate).toHaveBeenCalledWith('', expect.objectContaining({ sessionId }));
 
-    expect(serverEmit.mock.calls.map(([event, payload]) => [event, payload.delta ?? payload.fullContent ?? payload.reason])).toEqual([
+    expect(
+      serverEmit.mock.calls.map(([event, payload]) => [event, payload.delta ?? payload.fullContent ?? payload.reason]),
+    ).toEqual([
       ['agent:thinking', 'Processing request'],
       ['agent:stream', 'Hello'],
       ['agent:stream', ' '],
@@ -159,15 +169,13 @@ describe('ChatGateway streaming agent responses', () => {
       }),
     };
 
-    await (gateway as unknown as {
-      handleAgentResponse: (id: string, agentArg: typeof agent) => Promise<void>;
-    }).handleAgentResponse(sessionId, agent);
+    await (
+      gateway as unknown as {
+        handleAgentResponse: (id: string, agentArg: typeof agent) => Promise<void>;
+      }
+    ).handleAgentResponse(sessionId, agent);
 
-    expect(serverEmit.mock.calls.map(([event]) => event)).toEqual([
-      'agent:thinking',
-      'agent:stream',
-      'agent:error',
-    ]);
+    expect(serverEmit.mock.calls.map(([event]) => event)).toEqual(['agent:thinking', 'agent:stream', 'agent:error']);
     expect(serverEmit.mock.calls[2][1]).toEqual(
       expect.objectContaining({
         agentId: 'codex-001',
@@ -192,14 +200,13 @@ describe('ChatGateway streaming agent responses', () => {
       }),
     };
 
-    await (gateway as unknown as {
-      handleAgentResponse: (id: string, agentArg: typeof agent) => Promise<void>;
-    }).handleAgentResponse(sessionId, agent);
+    await (
+      gateway as unknown as {
+        handleAgentResponse: (id: string, agentArg: typeof agent) => Promise<void>;
+      }
+    ).handleAgentResponse(sessionId, agent);
 
-    expect(serverEmit.mock.calls.map(([event]) => event)).toEqual([
-      'agent:thinking',
-      'agent:error',
-    ]);
+    expect(serverEmit.mock.calls.map(([event]) => event)).toEqual(['agent:thinking', 'agent:error']);
     expect(serverEmit.mock.calls[1][1]).toEqual(
       expect.objectContaining({
         agentId: 'gemini-001',
@@ -219,11 +226,15 @@ describe('ChatGateway streaming agent responses', () => {
       }),
     };
 
-    await (gateway as unknown as {
-      handleAgentResponse: (id: string, agentArg: typeof agent) => Promise<void>;
-    }).handleAgentResponse(sessionId, agent);
+    await (
+      gateway as unknown as {
+        handleAgentResponse: (id: string, agentArg: typeof agent) => Promise<void>;
+      }
+    ).handleAgentResponse(sessionId, agent);
 
-    expect(serverEmit.mock.calls.map(([event, payload]) => [event, payload.delta ?? payload.fullContent ?? payload.reason])).toEqual([
+    expect(
+      serverEmit.mock.calls.map(([event, payload]) => [event, payload.delta ?? payload.fullContent ?? payload.reason]),
+    ).toEqual([
       ['agent:thinking', 'Processing request'],
       ['agent:stream:end', ''],
     ]);
@@ -252,6 +263,9 @@ describe('ChatGateway streaming agent responses', () => {
 
     expect(result).toEqual({ success: true, queued: true });
     expect(deletionQueue.add).toHaveBeenCalledWith({ sessionId });
-    expect(serverEmit).toHaveBeenCalledWith('session:delete:queued', { sessionId, message: 'Deletion queued for retry' });
+    expect(serverEmit).toHaveBeenCalledWith('session:delete:queued', {
+      sessionId,
+      message: 'Deletion queued for retry',
+    });
   });
 });
