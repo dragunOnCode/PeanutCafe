@@ -142,22 +142,21 @@ Agent 可以连续调用多个工具：
 
 ### 白名单定义
 
+**注意：`cd` 命令已被禁用**，禁止切换工作目录，防止越界访问。
+
+白名单通过环境变量配置，默认值如下：
+
 ```typescript
 // src/agents/tools/command-executor.ts
-const ALLOWED_COMMANDS = new Set([
-  // Git
+
+// 默认允许的命令（v1 精简版）
+const DEFAULT_ALLOWED_COMMANDS = [
   'git',
-  // Node.js
   'npm',
   'node',
   'npx',
-  'pnpm',
-  'yarn',
-  // Python
   'python',
   'pip',
-  'python3',
-  // Shell utilities
   'ls',
   'cat',
   'find',
@@ -169,17 +168,19 @@ const ALLOWED_COMMANDS = new Set([
   'rm',
   'cp',
   'mv',
-  'cd',
-  // Build tools
-  'make',
-  'cmake',
-  'gcc',
-  'g++',
-  // GitHub CLI
-  'gh',
-]);
+];
+
+// 从环境变量读取，支持自定义扩展
+const ALLOWED_COMMANDS = new Set(process.env.ALLOWED_COMMANDS?.split(',').filter(Boolean) ?? DEFAULT_ALLOWED_COMMANDS);
 
 const BLOCKED_PATTERNS = [';', '&&', '||', '|', '>', '<', '`', '$', '\\n'];
+```
+
+`.env.example` 中添加：
+
+```bash
+# Agent 工具白名单命令（逗号分隔）
+ALLOWED_COMMANDS=git,npm,node,npx,python,pip,ls,cat,find,grep,echo,pwd,mkdir,touch,rm,cp,mv
 ```
 
 ### 命令验证
@@ -369,6 +370,7 @@ Agent system prompt 需要更新，告知 Agent：
 - `src/agents/adapters/gemini.adapter.ts` - 同上
 - `src/agents/agents.module.ts` - 注册新服务
 - `src/agents/interfaces/llm-adapter.interface.ts` - 添加 toolCalls 字段到 context
+- `.env.example` - 添加 `ALLOWED_COMMANDS` 环境变量
 
 ## Testing
 
