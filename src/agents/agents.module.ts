@@ -30,6 +30,7 @@ import { apikeyConfig, geminiConfig } from '../config/configuration';
     CodexAdapter,
     GeminiAdapter,
     ToolExecutorService,
+    ToolRegistry,
   ],
 })
 export class AgentsModule {}
