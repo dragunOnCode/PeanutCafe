@@ -124,6 +124,7 @@ export class SessionDeletionQueue {
 import { Processor, WorkerHost, OnWorkerEvent } from '@nestjs/bullmq';
 import { Logger, Injectable } from '@nestjs/common';
 import { Job } from 'bullmq';
+import { Server } from 'socket.io';
 import { SESSION_DELETION_QUEUE } from './session-deletion.queue';
 import { SessionDeletionQueue } from './session-deletion.queue';
 import { SessionDeletionService } from '../session/session-deletion.service';
@@ -138,6 +139,7 @@ export class SessionDeletionProcessor extends WorkerHost {
   constructor(
     private readonly deletionService: SessionDeletionService,
     private readonly deletionQueue: SessionDeletionQueue,
+    private readonly server: Server,
   ) {
     super();
   }
@@ -162,9 +164,20 @@ export class SessionDeletionProcessor extends WorkerHost {
     this.logger.error(`Session ${sessionId} deletion failed after ${attempts} attempts`);
 
     if (attempts >= MAX_RETRY_BEFORE_STUCK) {
+      this.server.to(`session:${sessionId}`).emit('session:delete:stuck', {
+        sessionId,
+        attempts,
+        message: 'Deletion persistently failing, please contact support',
+      });
       this.logger.error(`Session ${sessionId} deletion stuck after ${attempts} attempts`);
       return;
     }
+
+    this.server.to(`session:${sessionId}`).emit('session:delete:failed', {
+      sessionId,
+      attempt: attempts,
+      message: 'Deletion failed, retrying...',
+    });
 
     const delay = 30000;
     await this.deletionQueue.add(sessionId);
