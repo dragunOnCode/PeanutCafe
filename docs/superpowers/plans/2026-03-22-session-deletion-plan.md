@@ -124,13 +124,9 @@ export class SessionDeletionQueue {
 import { Processor, WorkerHost, OnWorkerEvent } from '@nestjs/bullmq';
 import { Logger, Injectable } from '@nestjs/common';
 import { Job } from 'bullmq';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DataSource } from 'typeorm';
 import { SESSION_DELETION_QUEUE } from './session-deletion.queue';
 import { SessionDeletionQueue } from './session-deletion.queue';
-import { ShortTermMemoryService } from '../memory/services/short-term-memory.service';
-import { WorkspaceService } from '../workspace/services/workspace.service';
-import { SessionEntity } from '../database/entities/session.entity';
+import { SessionDeletionService } from '../session/session-deletion.service';
 
 const MAX_RETRY_BEFORE_STUCK = 10;
 
@@ -140,11 +136,7 @@ export class SessionDeletionProcessor extends WorkerHost {
   private readonly logger = new Logger(SessionDeletionProcessor.name);
 
   constructor(
-    @InjectRepository(SessionEntity)
-    private readonly sessionRepository: Repository<SessionEntity>,
-    private readonly shortTermMemory: ShortTermMemoryService,
-    private readonly workspaceService: WorkspaceService,
-    private readonly dataSource: DataSource,
+    private readonly deletionService: SessionDeletionService,
     private readonly deletionQueue: SessionDeletionQueue,
   ) {
     super();
@@ -153,13 +145,7 @@ export class SessionDeletionProcessor extends WorkerHost {
   async process(job: Job<{ sessionId: string }>): Promise<void> {
     const { sessionId } = job.data;
     this.logger.log(`Processing session deletion: ${sessionId}`);
-
-    await this.shortTermMemory.clear(sessionId);
-    await this.workspaceService.deleteSessionDirectory(sessionId);
-
-    await this.dataSource.transaction(async (manager) => {
-      await manager.delete(SessionEntity, sessionId);
-    });
+    await this.deletionService.deleteSession(sessionId);
   }
 
   @OnWorkerEvent('completed')
@@ -484,7 +470,41 @@ git commit -m "feat(gateway): import QueueModule and SessionDeletionService"
 
 ---
 
-## Task 7: 最终测试
+## Task 7: 更新 AppModule
+
+**Files:**
+
+- Modify: `src/app.module.ts`
+
+- [ ] **Step 1: 导入 QueueModule**
+
+```typescript
+import { QueueModule } from './queue/queue.module';
+
+@Module({
+  imports: [
+    ConfigModule.forRoot({ isGlobal: true }),
+    DatabaseModule,
+    AgentsModule,
+    MemoryModule,
+    WorkspaceModule,
+    GatewayModule,
+    QueueModule,
+  ],
+})
+export class AppModule {}
+```
+
+- [ ] **Step 2: 提交**
+
+```bash
+git add src/app.module.ts
+git commit -m "feat: import QueueModule in AppModule"
+```
+
+---
+
+## Task 8: 最终测试
 
 - [ ] **Step 1: 运行完整测试**
 
