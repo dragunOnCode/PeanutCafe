@@ -9,8 +9,7 @@ import {
   DecisionResult,
 } from '../interfaces/llm-adapter.interface';
 import { Message } from '../../common/types';
-
-type ChatMessage = { role: 'system' | 'user' | 'assistant'; content: string };
+import { buildChatMessages, ChatMessage } from '../utils/build-chat-messages';
 type StreamChunk = {
   choices?: Array<{
     delta?: {
@@ -48,7 +47,7 @@ export class ClaudeAdapter implements ILLMAdapter {
     this.status = AgentStatus.BUSY;
 
     try {
-      const messages = this.buildMessages(prompt, context);
+      const messages = this.buildMessages(context);
       this.logger.log(`Claude messages history: ${JSON.stringify(messages)}`);
 
       const response = await this.client.chat.completions.create({
@@ -84,7 +83,7 @@ export class ClaudeAdapter implements ILLMAdapter {
     this.status = AgentStatus.BUSY;
 
     try {
-      const messages = this.buildMessages(prompt, context);
+      const messages = this.buildMessages(context);
       this.logger.log(`Claude stream messages history: ${JSON.stringify(messages)}`);
 
       const stream = await this.client.chat.completions.create({
@@ -121,7 +120,7 @@ export class ClaudeAdapter implements ILLMAdapter {
     return this.status;
   }
 
-  private buildMessages(prompt: string, context: AgentContext): ChatMessage[] {
+  private buildMessages(context: AgentContext): ChatMessage[] {
     const systemPrompt = `你是 Claude，一个专业的软件架构师和编码专家。
 你的职责是：
 1. 设计系统架构
@@ -129,19 +128,6 @@ export class ClaudeAdapter implements ILLMAdapter {
 3. 提供技术选型建议
 4. 进行代码重构`;
 
-    const messages: ChatMessage[] = [{ role: 'system', content: systemPrompt }];
-
-    if (context.conversationHistory?.length) {
-      const recentMessages = context.conversationHistory.slice(-10);
-      for (const msg of recentMessages) {
-        messages.push({
-          role: msg.role === 'user' ? 'user' : 'assistant',
-          content: msg.content,
-        });
-      }
-    }
-
-    messages.push({ role: 'user', content: prompt });
-    return messages;
+    return buildChatMessages(systemPrompt, context.conversationHistory);
   }
 }

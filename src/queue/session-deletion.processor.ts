@@ -1,11 +1,11 @@
 import { Processor, WorkerHost, OnWorkerEvent } from '@nestjs/bullmq';
 import { Logger, Injectable } from '@nestjs/common';
 import { Job } from 'bullmq';
-import { Server } from 'socket.io';
 import { SESSION_DELETION_QUEUE } from './session-deletion.queue';
 import { SessionDeletionQueue } from './session-deletion.queue';
 import { SessionDeletionService } from '../session/session-deletion.service';
 import { SessionManager } from '../gateway/session.manager';
+import { ChatGateway } from '../gateway/chat.gateway';
 
 const MAX_RETRY_BEFORE_STUCK = 10;
 
@@ -17,7 +17,7 @@ export class SessionDeletionProcessor extends WorkerHost {
   constructor(
     private readonly deletionService: SessionDeletionService,
     private readonly deletionQueue: SessionDeletionQueue,
-    private readonly server: Server,
+    private readonly chatGateway: ChatGateway,
     private readonly sessionManager: SessionManager,
   ) {
     super();
@@ -32,7 +32,7 @@ export class SessionDeletionProcessor extends WorkerHost {
   @OnWorkerEvent('completed')
   async onCompleted(job: Job<{ sessionId: string }>) {
     const { sessionId } = job.data;
-    this.server.to(`session:${sessionId}`).emit('session:deleted', { sessionId });
+    this.chatGateway.server.to(`session:${sessionId}`).emit('session:deleted', { sessionId });
     this.sessionManager.getSessionClients(sessionId).forEach((c) => c.disconnect());
   }
 
@@ -44,7 +44,7 @@ export class SessionDeletionProcessor extends WorkerHost {
     this.logger.error(`Session ${sessionId} deletion failed after ${attempts} attempts`);
 
     if (attempts >= MAX_RETRY_BEFORE_STUCK) {
-      this.server.to(`session:${sessionId}`).emit('session:delete:stuck', {
+      this.chatGateway.server.to(`session:${sessionId}`).emit('session:delete:stuck', {
         sessionId,
         attempts,
         message: 'Deletion persistently failing, please contact support',
@@ -53,7 +53,7 @@ export class SessionDeletionProcessor extends WorkerHost {
       return;
     }
 
-    this.server.to(`session:${sessionId}`).emit('session:delete:failed', {
+    this.chatGateway.server.to(`session:${sessionId}`).emit('session:delete:failed', {
       sessionId,
       attempt: attempts,
       message: 'Deletion failed, retrying...',

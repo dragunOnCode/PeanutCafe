@@ -145,6 +145,14 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
 
     await this.ensureSessionRow(sessionId);
 
+    // 必须先 append 再写入 PostgreSQL：Redis 未命中时 shortTermMemory.get 会从 DB 拉取，
+    // 若用户行已存在，append 会再 push 一次同一条，导致上下文里用户话重复。
+    await this.conversationHistoryService.append(sessionId, {
+      role: 'user',
+      content: data.content,
+      timestamp: new Date().toISOString(),
+    });
+
     const messageEntity = this.messageRepository.create({
       id: userMessage.id,
       sessionId,
@@ -155,12 +163,6 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     });
     await this.messageRepository.save(messageEntity);
 
-    await this.conversationHistoryService.append(sessionId, {
-      role: 'user',
-      content: data.content,
-      timestamp: new Date().toISOString(),
-    });
-
     await this.transcriptService.appendEntry(sessionId, {
       role: 'user',
       content: data.content,
@@ -168,7 +170,7 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     });
 
     for (const agent of routeResult.targetAgents) {
-      await this.handleAgentResponse(sessionId, agent, parsed.processedContent);
+      await this.handleAgentResponse(sessionId, agent);
     }
 
     return { success: true, messageId: userMessage.id };
@@ -239,7 +241,6 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       name: string;
       streamGenerate: (prompt: string, context: AgentContext) => AsyncGenerator<string>;
     },
-    prompt: string,
   ): Promise<void> {
     this.server.to(`session:${sessionId}`).emit('agent:thinking', {
       agentId: agent.id,
@@ -266,7 +267,7 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       };
 
       let fullContent = '';
-      for await (const chunk of agent.streamGenerate(prompt, context)) {
+      for await (const chunk of agent.streamGenerate('', context)) {
         fullContent += chunk;
         this.server.to(`session:${sessionId}`).emit('agent:stream', {
           agentId: agent.id,

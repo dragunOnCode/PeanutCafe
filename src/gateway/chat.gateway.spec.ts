@@ -25,7 +25,7 @@ describe('ChatGateway streaming agent responses', () => {
         messages: [
           {
             role: 'user',
-            content: 'previous user message',
+            content: prompt,
             timestamp: '2026-03-21T00:00:00.000Z',
           },
         ],
@@ -85,7 +85,7 @@ describe('ChatGateway streaming agent responses', () => {
       name: 'Claude',
       generate: jest.fn(),
       streamGenerate: jest.fn(async function* (streamPrompt: string, context: AgentContext) {
-        expect(streamPrompt).toBe(prompt);
+        expect(streamPrompt).toBe('');
         expect(context.sessionId).toBe(sessionId);
         expect(context.conversationHistory).toHaveLength(1);
         yield 'Hello';
@@ -94,11 +94,12 @@ describe('ChatGateway streaming agent responses', () => {
       }),
     };
 
-    await (gateway as unknown as { handleAgentResponse: (id: string, agentArg: typeof agent, content: string) => Promise<void> })
-      .handleAgentResponse(sessionId, agent, prompt);
+    await (gateway as unknown as {
+      handleAgentResponse: (id: string, agentArg: typeof agent) => Promise<void>;
+    }).handleAgentResponse(sessionId, agent);
 
     expect(agent.generate).not.toHaveBeenCalled();
-    expect(agent.streamGenerate).toHaveBeenCalledWith(prompt, expect.objectContaining({ sessionId }));
+    expect(agent.streamGenerate).toHaveBeenCalledWith('', expect.objectContaining({ sessionId }));
 
     expect(serverEmit.mock.calls.map(([event, payload]) => [event, payload.delta ?? payload.fullContent ?? payload.reason])).toEqual([
       ['agent:thinking', 'Processing request'],
@@ -158,8 +159,9 @@ describe('ChatGateway streaming agent responses', () => {
       }),
     };
 
-    await (gateway as unknown as { handleAgentResponse: (id: string, agentArg: typeof agent, content: string) => Promise<void> })
-      .handleAgentResponse(sessionId, agent, prompt);
+    await (gateway as unknown as {
+      handleAgentResponse: (id: string, agentArg: typeof agent) => Promise<void>;
+    }).handleAgentResponse(sessionId, agent);
 
     expect(serverEmit.mock.calls.map(([event]) => event)).toEqual([
       'agent:thinking',
@@ -190,8 +192,9 @@ describe('ChatGateway streaming agent responses', () => {
       }),
     };
 
-    await (gateway as unknown as { handleAgentResponse: (id: string, agentArg: typeof agent, content: string) => Promise<void> })
-      .handleAgentResponse(sessionId, agent, prompt);
+    await (gateway as unknown as {
+      handleAgentResponse: (id: string, agentArg: typeof agent) => Promise<void>;
+    }).handleAgentResponse(sessionId, agent);
 
     expect(serverEmit.mock.calls.map(([event]) => event)).toEqual([
       'agent:thinking',
@@ -216,8 +219,9 @@ describe('ChatGateway streaming agent responses', () => {
       }),
     };
 
-    await (gateway as unknown as { handleAgentResponse: (id: string, agentArg: typeof agent, content: string) => Promise<void> })
-      .handleAgentResponse(sessionId, agent, prompt);
+    await (gateway as unknown as {
+      handleAgentResponse: (id: string, agentArg: typeof agent) => Promise<void>;
+    }).handleAgentResponse(sessionId, agent);
 
     expect(serverEmit.mock.calls.map(([event, payload]) => [event, payload.delta ?? payload.fullContent ?? payload.reason])).toEqual([
       ['agent:thinking', 'Processing request'],
