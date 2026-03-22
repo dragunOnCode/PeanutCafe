@@ -205,7 +205,27 @@ function validateCommand(command: string, args: string[]): boolean {
 
 ## Component Design
 
-### 1. ToolRegistry
+### 1. ToolCall Interface
+
+```typescript
+// 工具调用请求
+interface ToolCall {
+  id: string; // UUID v4 格式
+  name: string; // 工具名称
+  args: Record<string, unknown>; // 工具参数
+}
+
+// 工具执行结果
+interface ToolResult {
+  toolCallId: string;
+  toolName: string;
+  result: string; // 执行结果（字符串）
+  success: boolean;
+  error?: string; // 错误信息
+}
+```
+
+### 2. ToolRegistry
 
 **File:** `src/agents/tools/tool-registry.ts`
 
@@ -227,7 +247,7 @@ export class ToolRegistry {
 }
 ```
 
-### 2. CommandExecutor
+### 3. CommandExecutor
 
 **File:** `src/agents/tools/command-executor.ts`
 
@@ -252,7 +272,7 @@ interface CommandResult {
 }
 ```
 
-### 3. ToolExecutorService
+### 4. ToolExecutorService
 
 **File:** `src/agents/tools/tool-executor.service.ts`
 
@@ -265,13 +285,18 @@ interface CommandResult {
 ```typescript
 @Injectable()
 export class ToolExecutorService {
+  // 解析 Agent 输出，生成 UUID 作为 toolCallId
   parseToolCalls(output: string): ToolCall[];
-  executeToolCall(toolCall: ToolCall): Promise<string>;
+
+  // 执行单个工具调用
+  executeToolCall(toolCall: ToolCall): Promise<ToolResult>;
+
+  // 执行所有工具调用
   executeAllToolCalls(toolCalls: ToolCall[]): Promise<ToolResult[]>;
 }
 ```
 
-### 4. Agent Adapter 修改
+### 5. Agent Adapter 修改
 
 每个 Agent Adapter (`ClaudeAdapter`, `CodexAdapter`, `GeminiAdapter`) 需要：
 
@@ -287,7 +312,7 @@ export class ToolExecutorService {
 - `src/agents/adapters/codex.adapter.ts`
 - `src/agents/adapters/gemini.adapter.ts`
 
-### 5. ChatGateway 修改
+### 6. ChatGateway 修改
 
 - 注入 `ToolExecutorService`
 - 工具执行在 Agent 生成过程中进行（不需要额外修改流式输出逻辑）
