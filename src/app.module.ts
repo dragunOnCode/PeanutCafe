@@ -5,6 +5,7 @@ import { AgentsModule } from './agents/agents.module';
 import { MemoryModule } from './memory/memory.module';
 import { WorkspaceModule } from './workspace/workspace.module';
 import { DatabaseModule } from './database/database.module';
+import { QueueModule } from './queue/queue.module';
 
 @Module({
   imports: [
@@ -14,6 +15,7 @@ import { DatabaseModule } from './database/database.module';
     MemoryModule,
     WorkspaceModule,
     GatewayModule,
+    QueueModule,
   ],
 })
 export class AppModule {}
