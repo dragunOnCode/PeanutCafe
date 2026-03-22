@@ -10,19 +10,17 @@ ChatGateway (WebSocket)
     ▼ session:delete 事件
 ┌─────────────────────────────────┐
 │   SessionDeletionService        │
-│   (执行业务删除逻辑 + 重试 3 次) │
+│   (执行业务删除逻辑)            │
+│   BullMQ 队列（失败时自动重试） │
 └─────────────────────────────────┘
     │
     ├─ 成功 → session:deleted 通知客户端
     │
-    └─ 失败（3次重试全失败）
+    └─ 3次重试全失败 → Failed Event
               │
               ▼
-       BullMQ Queue (session-deletion)
-              │
-              ▼
-    SessionDeletionQueueConsumer
-       (后台消费者处理失败任务)
+    SessionDeletionFailedConsumer
+       (等待30s后重新入队，无限重试)
 ```
 
 ## Deletion Scope
@@ -42,30 +40,24 @@ ChatGateway (WebSocket)
 **File:** `src/session/session-deletion.service.ts`
 
 ```typescript
-interface DeleteSessionResult {
-  success: boolean;
-  sessionId: string;
-  error?: string;
-}
-
 @Injectable()
 export class SessionDeletionService {
-  async deleteSession(sessionId: string): Promise<DeleteSessionResult> {
-    // 删除 Redis
+  async deleteSession(sessionId: string): Promise<void> {
+    // Step 1: 删除 Redis
     await this.shortTermMemory.clear(sessionId);
 
-    // 删除 Workspace
+    // Step 2: 删除 Workspace
     await this.workspaceService.deleteSessionDirectory(sessionId);
 
-    // 删除 DB (PostgreSQL - cascade 删除 messages)
+    // Step 3: 删除 DB (PostgreSQL - cascade 删除 messages)
     await this.db.transaction(async (manager) => {
       await manager.delete(SessionEntity, sessionId);
     });
-
-    return { success: true, sessionId };
   }
 }
 ```
+
+**删除顺序原则：** 先删"可恢复"的（Redis），最后删"难恢复"的（DB）。任何一步失败则整个操作失败，由 BullMQ 重试。
 
 ### 2. ChatGateway WebSocket Handler
 
@@ -142,16 +134,24 @@ export class SessionDeletionQueueConsumer {
   @Process()
   async handleDeletion(job: Job<{ sessionId: string }>) {
     const { sessionId } = job.data;
-
     await this.deletionService.deleteSession(sessionId);
   }
 
   @OnWorkerEvent('failed')
   async onFailed(job: Job<{ sessionId: string }>) {
-    this.logger.error(`Session ${job.data.sessionId} deletion failed after ${job.attemptsMade} attempts`);
+    const { sessionId } = job.data;
+    this.logger.error(`Session ${sessionId} deletion failed after ${job.attemptsMade} attempts`);
 
-    // 记录失败日志，供人工排查
-    this.logger.warn(`Job data: ${JSON.stringify(job.data)}`);
+    // 等待 30s 后重新入队，实现无限重试直到成功
+    const delay = 30000;
+    await this.deletionQueue.add({ sessionId }, { delay });
+
+    // 通知客户端删除失败并等待重试
+    this.server.to(`session:${sessionId}`).emit('session:delete:failed', {
+      sessionId,
+      attempt: job.attemptsMade,
+      message: 'Deletion failed, retrying...',
+    });
   }
 }
 ```
@@ -171,42 +171,48 @@ export class SessionDeletionQueueConsumer {
 5. Disconnect all clients in session
 ```
 
-### Failure Flow (Retry)
+### Failure Flow (BullMQ Retry)
 
 ```
 1. Client sends session:delete { sessionId }
 2. ChatGateway.handleSessionDelete()
 3. SessionDeletionService.deleteSession() throws
-4. BullMQ retries (3 attempts: 1s, 2s, 4s backoff)
-5. All retries failed → Job enters failed state
-6. ChatGateway emits session:delete:queued { sessionId }
-7. SessionDeletionQueueConsumer (failed handler) logs error
+4. BullMQ 自动重试（3 attempts: 1s, 2s, 4s backoff）
+5. 3 次全失败 → Job 进入 failed 状态
+6. SessionDeletionQueueConsumer.onFailed() 捕获
+7. 等待 30s 后重新入队
+8. 重复步骤 4-7，直到删除成功
+9. 最终成功后，删除 job 记录，通知客户端
 ```
 
-### Queue Consumer Retry Flow
-
-```
-1. Failed job detected in SessionDeletionQueueConsumer
-2. Re-add to queue with delay (future enhancement: exponential backoff)
-3. Job re-processed by processor
-4. Repeat until successful
-```
+**无限重试机制：** 每次 failed 后等待 30s 重新入队，确保最终成功。成功后才通知客户端 `session:deleted`。
 
 ## Notification Events
 
-| Event                    | Payload                  | Trigger              |
-| ------------------------ | ------------------------ | -------------------- |
-| `session:delete:started` | `{ sessionId }`          | 开始删除             |
-| `session:deleted`        | `{ sessionId }`          | 删除成功             |
-| `session:delete:queued`  | `{ sessionId, message }` | 删除失败，已入队列   |
-| `session:delete:failed`  | `{ sessionId, error }`   | 队列处理失败（可选） |
+| Event                    | Payload                           | Trigger                       |
+| ------------------------ | --------------------------------- | ----------------------------- |
+| `session:delete:started` | `{ sessionId }`                   | 开始删除                      |
+| `session:deleted`        | `{ sessionId }`                   | 删除成功（最终成功）          |
+| `session:delete:queued`  | `{ sessionId, message }`          | 首次失败，已入队列            |
+| `session:delete:failed`  | `{ sessionId, attempt, message }` | BullMQ 重试失败，等待下次重试 |
 
 ## Error Handling
 
-1. **Redis 删除失败**: 记录日志，继续删除其他数据
-2. **Workspace 删除失败**: 记录日志，继续删除其他数据
-3. **PostgreSQL 删除失败**: 抛出异常，触发 BullMQ 重试
-4. **全失败**: Job 进入 failed 状态，由消费者处理
+**删除顺序：** Redis → Workspace → PostgreSQL
+
+| 步骤          | 操作                    | 失败后果                 |
+| ------------- | ----------------------- | ------------------------ |
+| 1. Redis      | 删除缓存                | 可接受，TTL 也会自然过期 |
+| 2. Workspace  | 删除文件目录            | 占磁盘空间，暂不处理     |
+| 3. PostgreSQL | 删除 session + messages | 用户数据，必须成功       |
+
+**任何一步失败都抛出异常，由 BullMQ 重试整个删除流程。**
+
+**全失败（3次重试后）：**
+
+- FailedConsumer 等待 30s 后重新入队
+- 持续重试直到成功（无限重试）
+- 日志记录每次失败信息
 
 ## Files to Create/Modify
 
