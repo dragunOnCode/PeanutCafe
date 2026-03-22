@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import OpenAI from 'openai';
 import { GeminiAdapter } from './gemini.adapter';
 import { AgentContext, AgentStatus } from '../interfaces/llm-adapter.interface';
+import { ToolExecutorService } from '../tools/tool-executor.service';
 
 jest.mock('openai', () => ({
   __esModule: true,
@@ -19,6 +20,12 @@ describe('GeminiAdapter', () => {
       if (key === 'QWEN_BASE_URL') return 'https://test.example.com';
       throw new Error(`Unexpected config key: ${key}`);
     }),
+  };
+
+  const mockToolExecutorService = {
+    registerSessionTools: jest.fn(),
+    parseToolCalls: jest.fn().mockReturnValue([]),
+    executeAllToolCalls: jest.fn().mockResolvedValue([]),
   };
 
   const MockedOpenAI = OpenAI as unknown as jest.Mock;
@@ -102,6 +109,10 @@ describe('GeminiAdapter', () => {
         {
           provide: ConfigService,
           useValue: mockConfigService,
+        },
+        {
+          provide: ToolExecutorService,
+          useValue: mockToolExecutorService,
         },
       ],
     }).compile();

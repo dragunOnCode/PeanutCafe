@@ -10,6 +10,7 @@ import {
 } from '../interfaces/llm-adapter.interface';
 import { Message } from '../../common/types';
 import { buildChatMessages, ChatMessage } from '../utils/build-chat-messages';
+import { ToolExecutorService } from '../tools/tool-executor.service';
 type StreamChunk = {
   choices?: Array<{
     delta?: {
@@ -33,7 +34,10 @@ export class GeminiAdapter implements ILLMAdapter {
   private status: AgentStatus = AgentStatus.ONLINE;
   private client: OpenAI;
 
-  constructor(private readonly configService: ConfigService) {
+  constructor(
+    private readonly configService: ConfigService,
+    private readonly toolExecutorService: ToolExecutorService,
+  ) {
     this.client = new OpenAI({
       apiKey: this.configService.getOrThrow<string>('QWEN_API_KEY'),
       baseURL: this.configService.getOrThrow<string>('QWEN_BASE_URL'),
@@ -72,23 +76,53 @@ export class GeminiAdapter implements ILLMAdapter {
   async *streamGenerate(prompt: string, context: AgentContext): AsyncGenerator<string> {
     this.status = AgentStatus.BUSY;
 
+    this.toolExecutorService.registerSessionTools(context.sessionId);
+
     try {
-      const messages = this.buildMessages(context);
-      this.logger.log(`Gemini stream messages history: ${JSON.stringify(messages)}`);
+      let currentMessages = [...this.buildMessages(context)];
+      let fullResponse = '';
 
-      const stream = await this.client.chat.completions.create({
-        model: this.model,
-        messages: messages as ChatMessage[],
-        temperature: 0.8,
-        max_tokens: 4000,
-        stream: true,
-      });
+      while (true) {
+        const stream = await this.client.chat.completions.create({
+          model: this.model,
+          messages: currentMessages as ChatMessage[],
+          temperature: 0.8,
+          max_tokens: 4000,
+          stream: true,
+        });
 
-      for await (const chunk of stream as AsyncIterable<StreamChunk>) {
-        const content = chunk.choices?.[0]?.delta?.content ?? '';
-        if (content) {
-          yield content;
+        let buffer = '';
+
+        for await (const chunk of stream as AsyncIterable<StreamChunk>) {
+          const content = chunk.choices?.[0]?.delta?.content ?? '';
+          if (content) {
+            buffer += content;
+            fullResponse += content;
+            yield content;
+          }
         }
+
+        const toolCalls = this.toolExecutorService.parseToolCalls(buffer);
+
+        if (toolCalls.length === 0) {
+          break;
+        }
+
+        currentMessages.push({
+          role: 'assistant',
+          content: buffer,
+        });
+
+        const toolResults = await this.toolExecutorService.executeAllToolCalls(toolCalls);
+
+        for (const result of toolResults) {
+          currentMessages.push({
+            role: 'user',
+            content: `[TOOL_RESULT] ${result.toolName}: ${result.success ? result.result : result.error}`,
+          });
+        }
+
+        buffer = '';
       }
     } catch (error) {
       this.logger.error(`Gemini streamGenerate error: ${error.message}`);
@@ -116,7 +150,12 @@ export class GeminiAdapter implements ILLMAdapter {
 1. 提供创意建议
 2. 设计UI/UX方案
 3. 优化用户体验
-4. 提出产品改进方向`;
+4. 提出产品改进方向
+
+当需要读取文件时，使用 <tool_call>{"name": "read_file", "args": {"path": "文件路径"}}</tool_call>
+当需要写入文件时，使用 <tool_call>{"name": "write_file", "args": {"path": "文件路径", "content": "文件内容"}}</tool_call>
+当需要列出文件时，使用 <tool_call>{"name": "list_files", "args": {}}</tool_call>
+当需要执行命令时，使用 <tool_call>{"name": "execute_command", "args": {"command": "命令", "args": ["参数"]}}</tool_call>`;
 
     return buildChatMessages(systemPrompt, context.conversationHistory);
   }
