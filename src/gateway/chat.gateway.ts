@@ -27,6 +27,8 @@ import { ClaudeAdapter } from '../agents/adapters/claude.adapter';
 import { CodexAdapter } from '../agents/adapters/codex.adapter';
 import { GeminiAdapter } from '../agents/adapters/gemini.adapter';
 import { AgentContext } from '../agents/interfaces/llm-adapter.interface';
+import { SessionDeletionQueue } from '../queue/session-deletion.queue';
+import { SessionDeletionService } from '../session/session-deletion.service';
 
 @WebSocketGateway({
   namespace: '/chat',
@@ -56,6 +58,8 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     private readonly claudeAdapter: ClaudeAdapter,
     private readonly codexAdapter: CodexAdapter,
     private readonly geminiAdapter: GeminiAdapter,
+    private readonly deletionService: SessionDeletionService,
+    private readonly deletionQueue: SessionDeletionQueue,
   ) {}
 
   afterInit(): void {
@@ -198,6 +202,34 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
         createdAt: s.createdAt,
       })),
     });
+  }
+
+  @SubscribeMessage('session:delete')
+  async handleSessionDelete(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { sessionId: string },
+  ) {
+    const { sessionId } = data;
+
+    this.server.to(`session:${sessionId}`).emit('session:delete:started', { sessionId });
+
+    try {
+      await this.deletionService.deleteSession(sessionId);
+
+      this.server.to(`session:${sessionId}`).emit('session:deleted', { sessionId });
+      this.sessionManager.getSessionClients(sessionId).forEach(c => c.disconnect());
+
+      return { success: true };
+    } catch (error) {
+      await this.deletionQueue.add({ sessionId });
+
+      this.server.to(`session:${sessionId}`).emit('session:delete:queued', {
+        sessionId,
+        message: 'Deletion queued for retry',
+      });
+
+      return { success: true, queued: true };
+    }
   }
 
   private async handleAgentResponse(

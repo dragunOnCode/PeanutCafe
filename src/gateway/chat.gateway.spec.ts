@@ -12,8 +12,12 @@ describe('ChatGateway streaming agent responses', () => {
   let messageRepository: { create: jest.Mock; save: jest.Mock };
   let sessionRepository: { exist: jest.Mock; create: jest.Mock; save: jest.Mock };
   let priorityService: { recordUsage: jest.Mock; updateConfig: jest.Mock };
+  let deletionService: { deleteSession: jest.Mock };
+  let deletionQueue: { add: jest.Mock };
+  let client: { disconnect: jest.Mock };
 
   beforeEach(() => {
+    client = { disconnect: jest.fn() };
     serverEmit = jest.fn();
     conversationHistoryService = {
       getContext: jest.fn().mockResolvedValue({
@@ -44,9 +48,15 @@ describe('ChatGateway streaming agent responses', () => {
       recordUsage: jest.fn(),
       updateConfig: jest.fn(),
     };
+    deletionService = {
+      deleteSession: jest.fn().mockResolvedValue(undefined),
+    };
+    deletionQueue = {
+      add: jest.fn().mockResolvedValue(undefined),
+    };
 
     gateway = new ChatGateway(
-      { addClient: jest.fn(), removeClient: jest.fn(), getActiveSessions: jest.fn(), getActiveClientCount: jest.fn() } as never,
+      { addClient: jest.fn(), removeClient: jest.fn(), getActiveSessions: jest.fn(), getActiveClientCount: jest.fn(), getSessionClients: jest.fn().mockReturnValue([]) } as never,
       { parseMessage: jest.fn(), route: jest.fn() } as never,
       { registerAgent: jest.fn() } as never,
       conversationHistoryService as never,
@@ -58,6 +68,8 @@ describe('ChatGateway streaming agent responses', () => {
       {} as never,
       {} as never,
       {} as never,
+      deletionService as never,
+      deletionQueue as never,
     );
 
     gateway.server = {
@@ -216,5 +228,26 @@ describe('ChatGateway streaming agent responses', () => {
     expect(conversationHistoryService.append).not.toHaveBeenCalled();
     expect(transcriptService.appendEntry).not.toHaveBeenCalled();
     expect(priorityService.recordUsage).not.toHaveBeenCalled();
+  });
+
+  it('emits session:deleted and disconnects clients on successful deletion', async () => {
+    const sessionId = 'test-session';
+
+    await gateway.handleSessionDelete(client as any, { sessionId });
+
+    expect(deletionService.deleteSession).toHaveBeenCalledWith(sessionId);
+    expect(serverEmit).toHaveBeenCalledWith('session:delete:started', { sessionId });
+    expect(serverEmit).toHaveBeenCalledWith('session:deleted', { sessionId });
+  });
+
+  it('queues deletion on failure', async () => {
+    const sessionId = 'test-session';
+    deletionService.deleteSession.mockRejectedValue(new Error('DB error'));
+
+    const result = await gateway.handleSessionDelete(client as any, { sessionId });
+
+    expect(result).toEqual({ success: true, queued: true });
+    expect(deletionQueue.add).toHaveBeenCalledWith({ sessionId });
+    expect(serverEmit).toHaveBeenCalledWith('session:delete:queued', { sessionId, message: 'Deletion queued for retry' });
   });
 });
