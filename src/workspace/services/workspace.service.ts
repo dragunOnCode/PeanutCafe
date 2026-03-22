@@ -81,6 +81,11 @@ export class WorkspaceService {
     return id;
   }
 
+  async deleteSessionDirectory(sessionId: string): Promise<void> {
+    const dir = join(this.baseDir, sessionId);
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+
   private async createDefaultWorkspace(sessionId: string): Promise<WorkspaceState> {
     const workspace: WorkspaceState = {
       sessionId,
