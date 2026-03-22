@@ -5,6 +5,7 @@ import { Server } from 'socket.io';
 import { SESSION_DELETION_QUEUE } from './session-deletion.queue';
 import { SessionDeletionQueue } from './session-deletion.queue';
 import { SessionDeletionService } from '../session/session-deletion.service';
+import { SessionManager } from '../gateway/session.manager';
 
 const MAX_RETRY_BEFORE_STUCK = 10;
 
@@ -17,6 +18,7 @@ export class SessionDeletionProcessor extends WorkerHost {
     private readonly deletionService: SessionDeletionService,
     private readonly deletionQueue: SessionDeletionQueue,
     private readonly server: Server,
+    private readonly sessionManager: SessionManager,
   ) {
     super();
   }
@@ -30,7 +32,8 @@ export class SessionDeletionProcessor extends WorkerHost {
   @OnWorkerEvent('completed')
   async onCompleted(job: Job<{ sessionId: string }>) {
     const { sessionId } = job.data;
-    this.logger.log(`Session ${sessionId} deleted successfully`);
+    this.server.to(`session:${sessionId}`).emit('session:deleted', { sessionId });
+    this.sessionManager.getSessionClients(sessionId).forEach((c) => c.disconnect());
   }
 
   @OnWorkerEvent('failed')
@@ -57,7 +60,7 @@ export class SessionDeletionProcessor extends WorkerHost {
     });
 
     const delay = 30000;
-    await this.deletionQueue.add(sessionId);
+    await this.deletionQueue.add({ sessionId });
     this.logger.log(`Session ${sessionId} re-queued with ${delay}ms delay`);
   }
 }
