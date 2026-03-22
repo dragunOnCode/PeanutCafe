@@ -147,7 +147,6 @@ export class SessionDeletionQueueConsumer {
     this.logger.error(`Session ${sessionId} deletion failed after ${attempts} attempts`);
 
     if (attempts >= MAX_RETRY_BEFORE_STUCK) {
-      // 超过阈值，通知客户端需要人工介入
       this.server.to(`session:${sessionId}`).emit('session:delete:stuck', {
         sessionId,
         attempts,
@@ -157,16 +156,21 @@ export class SessionDeletionQueueConsumer {
       return;
     }
 
-    // 等待 30s 后重新入队，实现无限重试直到成功
     const delay = 30000;
     await this.deletionQueue.add({ sessionId }, { delay });
 
-    // 通知客户端删除失败并等待重试
     this.server.to(`session:${sessionId}`).emit('session:delete:failed', {
       sessionId,
       attempt: attempts,
       message: 'Deletion failed, retrying...',
     });
+  }
+
+  @OnWorkerEvent('completed')
+  async onCompleted(job: Job<{ sessionId: string }>) {
+    const { sessionId } = job.data;
+    this.server.to(`session:${sessionId}`).emit('session:deleted', { sessionId });
+    this.sessionManager.getSessionClients(sessionId).forEach((c) => c.disconnect());
   }
 }
 ```
