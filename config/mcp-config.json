@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "brave-search": {
+      "image": "mcp/brave-search",
+      "env": {
+        "BRAVE_API_KEY": "${BRAVE_API_KEY}"
+      },
+      "enabled": true,
+      "timeout": 30000
+    }
+  }
+}
