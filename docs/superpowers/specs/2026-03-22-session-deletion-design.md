@@ -129,6 +129,8 @@ export class SessionDeletionQueue {
 **File:** `src/queue/session-deletion.processor.ts`
 
 ```typescript
+const MAX_RETRY_BEFORE_STUCK = 10;
+
 @Processor(SESSION_DELETION_QUEUE)
 export class SessionDeletionQueueConsumer {
   @Process()
@@ -140,7 +142,20 @@ export class SessionDeletionQueueConsumer {
   @OnWorkerEvent('failed')
   async onFailed(job: Job<{ sessionId: string }>) {
     const { sessionId } = job.data;
-    this.logger.error(`Session ${sessionId} deletion failed after ${job.attemptsMade} attempts`);
+    const attempts = job.attemptsMade ?? 1;
+
+    this.logger.error(`Session ${sessionId} deletion failed after ${attempts} attempts`);
+
+    if (attempts >= MAX_RETRY_BEFORE_STUCK) {
+      // 超过阈值，通知客户端需要人工介入
+      this.server.to(`session:${sessionId}`).emit('session:delete:stuck', {
+        sessionId,
+        attempts,
+        message: 'Deletion persistently failing, please contact support',
+      });
+      this.logger.error(`Session ${sessionId} deletion stuck after ${attempts} attempts`);
+      return;
+    }
 
     // 等待 30s 后重新入队，实现无限重试直到成功
     const delay = 30000;
@@ -149,7 +164,7 @@ export class SessionDeletionQueueConsumer {
     // 通知客户端删除失败并等待重试
     this.server.to(`session:${sessionId}`).emit('session:delete:failed', {
       sessionId,
-      attempt: job.attemptsMade,
+      attempt: attempts,
       message: 'Deletion failed, retrying...',
     });
   }
@@ -189,30 +204,38 @@ export class SessionDeletionQueueConsumer {
 
 ## Notification Events
 
-| Event                    | Payload                           | Trigger                       |
-| ------------------------ | --------------------------------- | ----------------------------- |
-| `session:delete:started` | `{ sessionId }`                   | 开始删除                      |
-| `session:deleted`        | `{ sessionId }`                   | 删除成功（最终成功）          |
-| `session:delete:queued`  | `{ sessionId, message }`          | 首次失败，已入队列            |
-| `session:delete:failed`  | `{ sessionId, attempt, message }` | BullMQ 重试失败，等待下次重试 |
+| Event                    | Payload                            | Trigger                          |
+| ------------------------ | ---------------------------------- | -------------------------------- |
+| `session:delete:started` | `{ sessionId }`                    | 开始删除                         |
+| `session:deleted`        | `{ sessionId }`                    | 删除成功（最终成功）             |
+| `session:delete:queued`  | `{ sessionId, message }`           | 首次失败，已入队列               |
+| `session:delete:failed`  | `{ sessionId, attempt, message }`  | BullMQ 重试失败，等待下次重试    |
+| `session:delete:stuck`   | `{ sessionId, attempts, message }` | 超过 10 次连续失败，需要人工介入 |
 
 ## Error Handling
 
 **删除顺序：** Redis → Workspace → PostgreSQL
 
-| 步骤          | 操作                    | 失败后果                 |
-| ------------- | ----------------------- | ------------------------ |
-| 1. Redis      | 删除缓存                | 可接受，TTL 也会自然过期 |
-| 2. Workspace  | 删除文件目录            | 占磁盘空间，暂不处理     |
-| 3. PostgreSQL | 删除 session + messages | 用户数据，必须成功       |
-
 **任何一步失败都抛出异常，由 BullMQ 重试整个删除流程。**
+
+| 步骤          | 操作                    | 失败处理                 |
+| ------------- | ----------------------- | ------------------------ |
+| 1. Redis      | 删除缓存                | 失败则抛出异常，触发重试 |
+| 2. Workspace  | 删除文件目录            | 失败则抛出异常，触发重试 |
+| 3. PostgreSQL | 删除 session + messages | 失败则抛出异常，触发重试 |
 
 **全失败（3次重试后）：**
 
 - FailedConsumer 等待 30s 后重新入队
 - 持续重试直到成功（无限重试）
-- 日志记录每次失败信息
+- 每次失败记录日志
+- **超过 10 次连续失败**：发送 `session:delete:stuck` 事件通知客户端，并记录 error 级别日志供人工介入
+
+**永久失败场景（如磁盘损坏、DB 不可用）：**
+
+- 无限重试会一直堆积在队列中
+- 10 次失败后发送 `session:delete:stuck` 事件，告知客户端需要人工处理
+- 监控告警：连续失败超过阈值时发送告警（由运维配置）
 
 ## Files to Create/Modify
 
