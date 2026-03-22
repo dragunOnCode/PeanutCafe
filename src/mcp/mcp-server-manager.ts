@@ -67,20 +67,18 @@ export class McpServerManager implements OnModuleInit, OnModuleDestroy {
     const containerInfo = await container.inspect();
     const containerId = containerInfo.Id;
 
-    const stdoutStream = await container.attach({
-      stream: true,
-      stdout: true,
-      stderr: false,
+    const exec = await container.exec({
+      AttachStdout: true,
+      AttachStdin: true,
+      Cmd: ['npx', '-y', '@brave/brave-search-mcp-server', '--transport', 'stdio'],
     });
 
-    const stdinStream = await container.attach({
-      stream: true,
-      stdin: true,
-      stdout: false,
-      stderr: false,
-    });
+    const stream = await exec.start({ hijack: true, stdin: true });
 
-    const client = new McpClientImpl(stdoutStream as unknown as Readable, stdinStream as unknown as Writable);
+    const client = new McpClientImpl(
+      { stdout: stream as unknown as NodeJS.ReadableStream, stdin: stream as unknown as NodeJS.WritableStream },
+      containerId,
+    );
     await client.connect();
 
     this.servers.set(name, {
