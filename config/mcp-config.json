@@ -3,7 +3,8 @@
     "open-websearch": {
       "url": "http://localhost:3001/mcp",
       "enabled": true,
-      "timeout": 30000
+      "timeout": 30000,
+      "profile": "open-websearch"
     }
   }
 }
