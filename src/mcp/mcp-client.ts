@@ -6,22 +6,41 @@ export class McpClientImpl {
   private connected = false;
   private requestId = 0;
   private pendingRequests = new Map<number, { resolve: (value: unknown) => void; reject: (reason: unknown) => void }>();
+  private readonly mode: 'http' | 'stdio';
+  private readonly url?: string;
+  private readonly containerExec?: {
+    stdout: NodeJS.ReadableStream;
+    stdin: NodeJS.WritableStream;
+  };
+  private readonly containerId?: string;
 
+  constructor(url: string);
   constructor(
-    private readonly containerExec: {
+    containerExec: {
       stdout: NodeJS.ReadableStream;
       stdin: NodeJS.WritableStream;
     },
-    private readonly containerId: string,
+    containerId: string,
+  );
+  constructor(
+    urlOrContainerExec: string | { stdout: NodeJS.ReadableStream; stdin: NodeJS.WritableStream },
+    containerId?: string,
   ) {
-    this.containerExec.stdout.on('data', (data: Buffer) => {
-      this.handleMessage(data.toString());
-    });
-
-    this.containerExec.stdout.on('close', () => {
-      this.connected = false;
-      this.logger.log('MCP client disconnected');
-    });
+    if (typeof urlOrContainerExec === 'string') {
+      this.mode = 'http';
+      this.url = urlOrContainerExec;
+    } else {
+      this.mode = 'stdio';
+      this.containerExec = urlOrContainerExec;
+      this.containerId = containerId;
+      this.containerExec.stdout.on('data', (data: Buffer) => {
+        this.handleMessage(data.toString());
+      });
+      this.containerExec.stdout.on('close', () => {
+        this.connected = false;
+        this.logger.log('MCP client disconnected');
+      });
+    }
   }
 
   isConnected(): boolean {
@@ -33,7 +52,11 @@ export class McpClientImpl {
       return;
     }
     this.connected = true;
-    this.logger.log(`Connected to MCP container: ${this.containerId}`);
+    if (this.mode === 'http') {
+      this.logger.log(`Connected to MCP server: ${this.url}`);
+    } else {
+      this.logger.log(`Connected to MCP container: ${this.containerId}`);
+    }
   }
 
   async disconnect(): Promise<void> {
@@ -80,7 +103,33 @@ export class McpClientImpl {
       };
 
       this.pendingRequests.set(id, { resolve, reject });
-      this.containerExec.stdin.write(JSON.stringify(request) + '\n');
+
+      if (this.mode === 'http') {
+        fetch(`${this.url}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(request),
+        })
+          .then(async (res) => {
+            if (!res.ok) {
+              reject(new Error(`HTTP error: ${res.status}`));
+              return;
+            }
+            const data = await res.json();
+            if (data.error) {
+              reject(new Error(data.error.message || 'MCP error'));
+            } else {
+              resolve(data.result);
+            }
+            this.pendingRequests.delete(id);
+          })
+          .catch((err) => {
+            reject(err);
+            this.pendingRequests.delete(id);
+          });
+      } else {
+        this.containerExec!.stdin.write(JSON.stringify(request) + '\n');
+      }
 
       setTimeout(() => {
         if (this.pendingRequests.has(id)) {

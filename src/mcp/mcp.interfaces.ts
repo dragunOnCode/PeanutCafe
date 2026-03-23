@@ -32,5 +32,5 @@ export interface ServerInfo {
   config: McpServerConfig;
   status: ServerStatus;
   client: McpClient;
-  containerId: string;
+  containerId?: string;
 }
