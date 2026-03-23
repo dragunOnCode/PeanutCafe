@@ -2,7 +2,6 @@ import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/commo
 import Docker from 'dockerode';
 import * as fs from 'fs';
 import * as path from 'path';
-import { Readable, Writable } from 'stream';
 import { McpServerConfig, ServerStatus, McpClient, ServerInfo } from './mcp.interfaces';
 import { McpClientImpl } from './mcp-client';
 
@@ -58,6 +57,7 @@ export class McpServerManager implements OnModuleInit, OnModuleDestroy {
     let client: McpClient;
 
     if (config.url) {
+      // HTTP 模式: 直接连接
       client = new McpClientImpl(config.url);
       await client.connect();
 
@@ -68,6 +68,7 @@ export class McpServerManager implements OnModuleInit, OnModuleDestroy {
         client,
       });
     } else if (config.image) {
+      // STDIO 模式: Docker spawning
       const container = await this.docker.createContainer({
         Image: config.image,
         Env: this.resolveEnvVars(config.env || {}),

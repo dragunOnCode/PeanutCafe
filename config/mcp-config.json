@@ -1,10 +1,7 @@
 {
   "mcpServers": {
-    "brave-search": {
-      "image": "mcp/brave-search",
-      "env": {
-        "BRAVE_API_KEY": "${BRAVE_API_KEY}"
-      },
+    "open-websearch": {
+      "url": "http://localhost:3001/mcp",
       "enabled": true,
       "timeout": 30000
     }

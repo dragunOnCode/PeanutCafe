@@ -19,3 +19,10 @@ describe('McpClientImpl', () => {
     expect(client.isConnected()).toBe(false);
   });
 });
+
+describe('HttpMcpClient', () => {
+  it('should report connected with HTTP URL', () => {
+    const client = new McpClientImpl('http://localhost:3001/mcp');
+    expect(client.isConnected()).toBe(true);
+  });
+});
