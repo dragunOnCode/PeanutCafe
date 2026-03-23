@@ -13,6 +13,7 @@ interface JsonRpcResponseEnvelope {
 }
 
 type ContainerExec = { stdout: Readable; stdin: Writable };
+const CONNECT_ABORTED_MESSAGE = 'HTTP request failed: The operation was aborted.';
 
 export class McpClientImpl {
   private readonly logger = new Logger(McpClientImpl.name);
@@ -66,7 +67,7 @@ export class McpClientImpl {
           .then(() => {
             if (attempt !== this.connectAttempt) {
               this.sessionId = null;
-              return;
+              throw new Error(CONNECT_ABORTED_MESSAGE);
             }
 
             this.connected = true;
@@ -204,7 +205,7 @@ export class McpClientImpl {
       });
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') {
-        throw new Error(`HTTP request failed: ${error.message}`);
+        throw new Error(CONNECT_ABORTED_MESSAGE);
       }
       throw new Error(`HTTP request failed: ${error instanceof Error ? error.message : String(error)}`);
     }
