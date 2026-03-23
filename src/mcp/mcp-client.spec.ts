@@ -25,7 +25,14 @@ describe('McpClientImpl HTTP transport', () => {
     jest.restoreAllMocks();
   });
 
-  it('initializes HTTP MCP once and reuses the session id', async () => {
+  it('initializes HTTP MCP once, sends the expected handshake, and reuses the session id for listTools', async () => {
+    const tools = [
+      {
+        name: 'search',
+        description: 'Search the web',
+        inputSchema: { type: 'object' },
+      },
+    ];
     const fetchMock = jest
       .fn<typeof fetch>()
       .mockResolvedValueOnce(
@@ -46,7 +53,7 @@ describe('McpClientImpl HTTP transport', () => {
         }),
       )
       .mockResolvedValueOnce(
-        new Response(JSON.stringify({ jsonrpc: '2.0', id: 2, result: { tools: [] } }), {
+        new Response(JSON.stringify({ jsonrpc: '2.0', id: 2, result: { tools } }), {
           status: 200,
           headers: {
             'content-type': 'application/json',
@@ -60,12 +67,15 @@ describe('McpClientImpl HTTP transport', () => {
 
     await client.connect();
     await client.connect();
-    await client.listTools();
+    await expect(client.listTools()).resolves.toEqual(tools);
 
     expect(fetchMock).toHaveBeenCalledTimes(3);
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      1,
-      'http://localhost:3001/mcp',
+    const initializeCall = fetchMock.mock.calls[0];
+    const initializedCall = fetchMock.mock.calls[1];
+    const listToolsCall = fetchMock.mock.calls[2];
+
+    expect(initializeCall[0]).toBe('http://localhost:3001/mcp');
+    expect(initializeCall[1]).toEqual(
       expect.objectContaining({
         method: 'POST',
         headers: expect.objectContaining({
@@ -74,28 +84,145 @@ describe('McpClientImpl HTTP transport', () => {
         }),
       }),
     );
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      2,
-      'http://localhost:3001/mcp',
+    expect(JSON.parse(initializeCall[1]!.body as string)).toEqual({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: {
+        protocolVersion: '2025-03-26',
+        capabilities: {},
+        clientInfo: {
+          name: 'PeanutCafe',
+          version: '0.0.1',
+        },
+      },
+    });
+
+    expect(JSON.parse(initializedCall[1]!.body as string)).toEqual({
+      jsonrpc: '2.0',
+      method: 'notifications/initialized',
+    });
+    expect(initializedCall[1]!.headers).toEqual(
       expect.objectContaining({
-        headers: expect.objectContaining({
-          'Content-Type': 'application/json',
-          Accept: 'application/json, text/event-stream',
-          'mcp-session-id': 'session-123',
-        }),
+        'Content-Type': 'application/json',
+        Accept: 'application/json, text/event-stream',
+        'mcp-session-id': 'session-123',
       }),
     );
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      3,
-      'http://localhost:3001/mcp',
+
+    expect(JSON.parse(listToolsCall[1]!.body as string)).toEqual({
+      jsonrpc: '2.0',
+      id: 2,
+      method: 'tools/list',
+      params: {},
+    });
+    expect(listToolsCall[1]!.headers).toEqual(
       expect.objectContaining({
-        headers: expect.objectContaining({
-          'Content-Type': 'application/json',
-          Accept: 'application/json, text/event-stream',
-          'mcp-session-id': 'session-123',
-        }),
+        'Content-Type': 'application/json',
+        Accept: 'application/json, text/event-stream',
+        'mcp-session-id': 'session-123',
       }),
     );
+  });
+
+  it('rejects when an event-stream response does not contain the expected response id', async () => {
+    const fetchMock = jest
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { protocolVersion: '2025-03-26' } }), {
+          status: 200,
+          headers: {
+            'content-type': 'application/json',
+            'mcp-session-id': 'session-789',
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(null, {
+          status: 202,
+          headers: {
+            'mcp-session-id': 'session-789',
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          [
+            'event: message',
+            'data: {"jsonrpc":"2.0","method":"notifications/progress","params":{"progress":50}}',
+            '',
+            'event: message',
+            'data: {"jsonrpc":"2.0","id":999,"result":{"content":[{"type":"text","text":"wrong id"}]}}',
+            '',
+          ].join('\n'),
+          {
+            status: 200,
+            headers: {
+              'content-type': 'text/event-stream',
+              'mcp-session-id': 'session-789',
+            },
+          },
+        ),
+      );
+    global.fetch = fetchMock;
+
+    const client = new McpClientImpl('http://localhost:3001/mcp');
+
+    await client.connect();
+
+    await expect(client.callTool('search', { query: 'peanut cafe' })).rejects.toThrow(
+      'MCP response missing expected id 2',
+    );
+  });
+
+  it('coalesces concurrent HTTP connect calls into a single initialization sequence', async () => {
+    let resolveInitialize: ((response: Response) => void) | undefined;
+    const initializeResponse = new Promise<Response>((resolve) => {
+      resolveInitialize = resolve;
+    });
+    const notificationResponse = new Response(null, {
+      status: 202,
+      headers: {
+        'mcp-session-id': 'session-concurrent',
+      },
+    });
+    const fetchMock = jest
+      .fn<typeof fetch>()
+      .mockImplementationOnce(() => initializeResponse)
+      .mockResolvedValue(notificationResponse);
+    global.fetch = fetchMock;
+
+    const client = new McpClientImpl('http://localhost:3001/mcp');
+
+    const firstConnect = client.connect();
+    const secondConnect = client.connect();
+
+    await Promise.resolve();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    resolveInitialize!(
+      new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { protocolVersion: '2025-03-26' } }), {
+        status: 200,
+        headers: {
+          'content-type': 'application/json',
+          'mcp-session-id': 'session-concurrent',
+        },
+      }),
+    );
+
+    await Promise.all([firstConnect, secondConnect]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(fetchMock.mock.calls[0][1]!.body as string)).toEqual(
+      expect.objectContaining({
+        method: 'initialize',
+      }),
+    );
+    expect(JSON.parse(fetchMock.mock.calls[1][1]!.body as string)).toEqual({
+      jsonrpc: '2.0',
+      method: 'notifications/initialized',
+    });
   });
 
   it('parses event-stream tool call responses and returns text content', async () => {
