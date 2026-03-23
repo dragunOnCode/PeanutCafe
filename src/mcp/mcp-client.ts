@@ -18,6 +18,7 @@ export class McpClientImpl {
   private readonly logger = new Logger(McpClientImpl.name);
   private connected = false;
   private requestId = 0;
+  private connectPromise: Promise<void> | null = null;
   private readonly baseUrl: string | null = null;
   private readonly containerExec: ContainerExec | null = null;
   private readonly containerId: string | null = null;
@@ -55,9 +56,18 @@ export class McpClientImpl {
     }
 
     if (this.baseUrl) {
-      await this.initializeHttpSession();
-      this.connected = true;
-      this.logger.log(`Connected to MCP server: ${this.baseUrl}`);
+      if (!this.connectPromise) {
+        this.connectPromise = this.initializeHttpSession()
+          .then(() => {
+            this.connected = true;
+            this.logger.log(`Connected to MCP server: ${this.baseUrl}`);
+          })
+          .finally(() => {
+            this.connectPromise = null;
+          });
+      }
+
+      await this.connectPromise;
       return;
     }
 
@@ -215,7 +225,12 @@ export class McpClientImpl {
       return messages.at(-1);
     }
 
-    return messages.find((message) => message.id === expectedId);
+    const expectedMessage = messages.find((message) => message.id === expectedId);
+    if (!expectedMessage) {
+      throw new Error(`MCP response missing expected id ${expectedId}`);
+    }
+
+    return expectedMessage;
   }
 
   private sendRequest(method: string, params: Record<string, unknown>): Promise<unknown> {
