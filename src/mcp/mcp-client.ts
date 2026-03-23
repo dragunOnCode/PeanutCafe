@@ -2,47 +2,39 @@ import { Logger } from '@nestjs/common';
 import { Readable, Writable } from 'stream';
 import { McpTool } from './mcp.interfaces.js';
 
-interface JsonRpcError {
-  message?: string;
-}
-
-interface JsonRpcResponseEnvelope {
-  id?: number;
-  error?: JsonRpcError;
-  result?: unknown;
-}
-
-type ContainerExec = { stdout: Readable; stdin: Writable };
-
 export class McpClientImpl {
   private readonly logger = new Logger(McpClientImpl.name);
   private connected = false;
   private requestId = 0;
-  private readonly baseUrl: string | null = null;
-  private readonly containerExec: ContainerExec | null = null;
-  private readonly containerId: string | null = null;
-  private sessionId: string | null = null;
+  private baseUrl: string | null = null;
+  private containerExec: { stdout: Readable; stdin: Writable } | null = null;
+  private containerId: string | null = null;
   private pendingRequests = new Map<number, { resolve: (value: unknown) => void; reject: (reason: unknown) => void }>();
 
+  // HTTP 模式构造函数
   constructor(baseUrl: string);
-  constructor(containerExec: ContainerExec, containerId: string);
-  constructor(first: string | ContainerExec, second?: string) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  constructor(containerExec: any, containerId: string);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  constructor(first: string | any, second?: string) {
     if (typeof first === 'string') {
       this.baseUrl = first;
-      return;
-    }
-
-    this.containerExec = first;
-    this.containerId = second ?? null;
-
-    this.containerExec.stdout.on('data', (data: Buffer) => {
-      this.handleMessage(data.toString());
-    });
-
-    this.containerExec.stdout.on('close', () => {
+      this.connected = true;
+    } else {
+      const exec = first as { stdout: { on: (event: string, cb: (data: Buffer) => void) => void }; stdin: Writable };
+      this.containerExec = exec as { stdout: Readable; stdin: Writable };
+      this.containerId = second!;
       this.connected = false;
-      this.logger.log('MCP client disconnected');
-    });
+
+      exec.stdout.on('data', (data: Buffer) => {
+        this.handleMessage(data.toString());
+      });
+
+      exec.stdout.on('close', () => {
+        this.connected = false;
+        this.logger.log('MCP client disconnected');
+      });
+    }
   }
 
   isConnected(): boolean {
@@ -50,176 +42,67 @@ export class McpClientImpl {
   }
 
   async connect(): Promise<void> {
-    if (this.connected) {
-      return;
-    }
-
-    if (this.baseUrl) {
-      await this.initializeHttpSession();
-      this.connected = true;
-      this.logger.log(`Connected to MCP server: ${this.baseUrl}`);
-      return;
-    }
-
+    if (this.connected) return;
     this.connected = true;
-    this.logger.log(`Connected to MCP container: ${this.containerId}`);
+    if (this.baseUrl) {
+      this.logger.log(`Connected to MCP server: ${this.baseUrl}`);
+    } else {
+      this.logger.log(`Connected to MCP container: ${this.containerId}`);
+    }
   }
 
   async disconnect(): Promise<void> {
-    if (!this.connected) {
-      return;
-    }
-
+    if (!this.connected) return;
     this.connected = false;
-    this.sessionId = null;
     this.pendingRequests.forEach(({ reject }) => reject(new Error('Disconnected')));
     this.pendingRequests.clear();
   }
 
   async listTools(): Promise<McpTool[]> {
     const response = this.baseUrl ? await this.httpRequest('tools/list', {}) : await this.sendRequest('tools/list', {});
-    return (response as { tools?: McpTool[] }).tools ?? [];
+    return (response as { tools: McpTool[] }).tools || [];
   }
 
   async callTool(name: string, args: Record<string, unknown>): Promise<string> {
     const response = this.baseUrl
       ? await this.httpRequest('tools/call', { name, arguments: args })
       : await this.sendRequest('tools/call', { name, arguments: args });
-    const content = (response as { content?: Array<{ type: string; text?: string }> }).content;
-
-    if (content?.[0]?.type === 'text' && content[0].text) {
+    const content = (response as { content: Array<{ type: string; text?: string }> }).content;
+    if (content && content[0]?.type === 'text' && content[0].text) {
       return content[0].text;
     }
-
-    return JSON.stringify(content ?? response);
-  }
-
-  private async initializeHttpSession(): Promise<void> {
-    await this.performHttpRequest('initialize', {
-      protocolVersion: '2025-03-26',
-      capabilities: {},
-      clientInfo: {
-        name: 'PeanutCafe',
-        version: '0.0.1',
-      },
-    });
-
-    await this.performHttpNotification('notifications/initialized');
+    return JSON.stringify(content);
   }
 
   private async httpRequest(method: string, params: Record<string, unknown>): Promise<unknown> {
-    if (!this.baseUrl) {
-      throw new Error('Not HTTP mode');
-    }
+    if (!this.baseUrl) throw new Error('Not HTTP mode');
+    if (!this.connected) throw new Error('Client not connected');
 
-    if (!this.connected) {
-      throw new Error('Client not connected');
-    }
-
-    return this.performHttpRequest(method, params);
-  }
-
-  private async performHttpRequest(method: string, params: Record<string, unknown>): Promise<unknown> {
     const id = ++this.requestId;
-    const response = await this.postHttp({
-      jsonrpc: '2.0',
-      id,
-      method,
-      params,
-    });
-
-    const message = await this.parseHttpResponse(response, id);
-    if (message?.error) {
-      throw new Error(message.error.message || 'MCP error');
-    }
-
-    return message?.result;
-  }
-
-  private async performHttpNotification(method: string, params?: Record<string, unknown>): Promise<void> {
-    const response = await this.postHttp({
-      jsonrpc: '2.0',
-      method,
-      ...(params ? { params } : {}),
-    });
-
-    await this.parseHttpResponse(response);
-  }
-
-  private async postHttp(body: Record<string, unknown>): Promise<Response> {
-    if (!this.baseUrl) {
-      throw new Error('Not HTTP mode');
-    }
-
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-      Accept: 'application/json, text/event-stream',
-    };
-
-    if (this.sessionId) {
-      headers['mcp-session-id'] = this.sessionId;
-    }
+    const body = JSON.stringify({ jsonrpc: '2.0', id, method, params });
 
     let response: Response;
     try {
       response = await fetch(this.baseUrl, {
         method: 'POST',
-        headers,
-        body: JSON.stringify(body),
+        headers: { 'Content-Type': 'application/json' },
+        body,
       });
     } catch (error) {
       throw new Error(`HTTP request failed: ${error instanceof Error ? error.message : String(error)}`);
     }
 
-    this.persistSessionId(response);
-
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);
     }
 
-    return response;
-  }
+    const data = await response.json();
 
-  private persistSessionId(response: Response): void {
-    const sessionId = response.headers.get('mcp-session-id');
-    if (sessionId) {
-      this.sessionId = sessionId;
-    }
-  }
-
-  private async parseHttpResponse(response: Response, expectedId?: number): Promise<JsonRpcResponseEnvelope | undefined> {
-    const rawBody = await response.text();
-    if (!rawBody.trim()) {
-      return undefined;
+    if (data.error) {
+      throw new Error(data.error.message || 'MCP error');
     }
 
-    const contentType = response.headers.get('content-type') ?? '';
-    if (contentType.includes('text/event-stream')) {
-      return this.parseEventStream(rawBody, expectedId);
-    }
-
-    const message = JSON.parse(rawBody) as JsonRpcResponseEnvelope;
-    return message;
-  }
-
-  private parseEventStream(body: string, expectedId?: number): JsonRpcResponseEnvelope | undefined {
-    const messages = body
-      .split(/\r?\n\r?\n/)
-      .map((block) =>
-        block
-          .split(/\r?\n/)
-          .filter((line) => line.startsWith('data:'))
-          .map((line) => line.slice(5).trim())
-          .join('\n'),
-      )
-      .filter((payload) => payload.length > 0)
-      .map((payload) => JSON.parse(payload) as JsonRpcResponseEnvelope);
-
-    if (expectedId === undefined) {
-      return messages.at(-1);
-    }
-
-    return messages.find((message) => message.id === expectedId);
+    return data.result;
   }
 
   private sendRequest(method: string, params: Record<string, unknown>): Promise<unknown> {
@@ -233,7 +116,7 @@ export class McpClientImpl {
       const request = { jsonrpc: '2.0', id, method, params };
 
       this.pendingRequests.set(id, { resolve, reject });
-      this.containerExec.stdin.write(JSON.stringify(request) + '\n');
+      this.containerExec!.stdin.write(JSON.stringify(request) + '\n');
 
       setTimeout(() => {
         if (this.pendingRequests.has(id)) {
@@ -252,7 +135,7 @@ export class McpClientImpl {
     const lines = data.split('\n').filter((line) => line.trim());
     for (const line of lines) {
       try {
-        const message = JSON.parse(line) as JsonRpcResponseEnvelope;
+        const message = JSON.parse(line);
         if (message.id && this.pendingRequests.has(message.id)) {
           const { resolve, reject } = this.pendingRequests.get(message.id)!;
           this.pendingRequests.delete(message.id);
@@ -268,5 +151,3 @@ export class McpClientImpl {
     }
   }
 }
-
-export { McpClientImpl as StandardMcpClient };
