@@ -7,7 +7,7 @@ export type {
   McpTool,
   ServerInfo,
 } from './mcp.interfaces';
-export { McpClientImpl } from './mcp-client';
+export { McpClientImpl, StandardMcpClient } from './mcp-client';
 export * from './mcp-server-manager';
 export * from './mcp-tool-registry';
 export * from './mcp.module';
