@@ -225,7 +225,7 @@ describe('McpClientImpl HTTP transport', () => {
     });
   });
 
-  it('does not remain connected or retain session state if disconnect is called during an in-flight connect', async () => {
+  it('rejects a canceled in-flight connect and does not retain session state', async () => {
     let resolveInitialize: ((response: Response) => void) | undefined;
     const initializeResponse = new Promise<Response>((resolve) => {
       resolveInitialize = resolve;
@@ -260,7 +260,7 @@ describe('McpClientImpl HTTP transport', () => {
       }),
     );
 
-    await pendingConnect;
+    await expect(pendingConnect).rejects.toThrow('HTTP request failed: The operation was aborted.');
 
     expect(client.isConnected()).toBe(false);
 
