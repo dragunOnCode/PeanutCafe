@@ -115,7 +115,7 @@ export class McpClientImpl {
       const request = { jsonrpc: '2.0', id, method, params };
 
       this.pendingRequests.set(id, { resolve, reject });
-      this.containerExec!.stdin.write(JSON.stringify(request) + '\n');
+      this.containerExec.stdin.write(JSON.stringify(request) + '\n');
 
       setTimeout(() => {
         if (this.pendingRequests.has(id)) {

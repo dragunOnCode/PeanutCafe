@@ -51,7 +51,7 @@ export class McpToolRegistry implements OnModuleInit {
     const tools = await client.listTools();
 
     for (const tool of tools) {
-      const mcpTool = tool as McpTool;
+      const mcpTool = tool;
       const adaptedTool: Tool = {
         name: `${serverName}.${mcpTool.name}`,
         description: mcpTool.description,
