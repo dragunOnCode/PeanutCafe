@@ -110,9 +110,28 @@ services:
       - '-c'
       - 'for i in 1 2 3 4 5; do ollama pull nomic-embed-text && exit 0; echo "pull failed, retry in 10s..."; sleep 10; done; exit 1'
 
+  open-websearch:
+    image: ghcr.io/aas-ee/open-web-search:latest
+    container_name: lobster-open-websearch
+    restart: unless-stopped
+    ports:
+      - '3001:3000'
+    environment:
+      - ENABLE_CORS=true
+      - CORS_ORIGIN=*
+      - DEFAULT_SEARCH_ENGINE=bing
+      - MODE=http
+      - PORT=3000
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:3000/mcp']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
 volumes:
   postgres_data:
   redis_data:
   chroma_data:
   minio_data:
   ollama_data:
+  open-websearch_data:
