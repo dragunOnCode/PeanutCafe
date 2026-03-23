@@ -20,6 +20,7 @@ export class McpClientImpl {
   private requestId = 0;
   private connectPromise: Promise<void> | null = null;
   private connectAttempt = 0;
+  private connectAbortController: AbortController | null = null;
   private readonly baseUrl: string | null = null;
   private readonly containerExec: ContainerExec | null = null;
   private readonly containerId: string | null = null;
@@ -59,7 +60,9 @@ export class McpClientImpl {
     if (this.baseUrl) {
       if (!this.connectPromise) {
         const attempt = ++this.connectAttempt;
-        this.connectPromise = this.initializeHttpSession()
+        this.sessionId = null;
+        this.connectAbortController = new AbortController();
+        this.connectPromise = this.initializeHttpSession(this.connectAbortController.signal)
           .then(() => {
             if (attempt !== this.connectAttempt) {
               this.sessionId = null;
@@ -69,7 +72,12 @@ export class McpClientImpl {
             this.connected = true;
             this.logger.log(`Connected to MCP server: ${this.baseUrl}`);
           })
+          .catch((error) => {
+            this.sessionId = null;
+            throw error;
+          })
           .finally(() => {
+            this.connectAbortController = null;
             this.connectPromise = null;
           });
       }
@@ -90,6 +98,7 @@ export class McpClientImpl {
     this.connectAttempt++;
     this.connected = false;
     this.sessionId = null;
+    this.connectAbortController?.abort();
     this.pendingRequests.forEach(({ reject }) => reject(new Error('Disconnected')));
     this.pendingRequests.clear();
   }
@@ -110,17 +119,21 @@ export class McpClientImpl {
     return JSON.stringify(content ?? response);
   }
 
-  private async initializeHttpSession(): Promise<void> {
-    await this.performHttpRequest('initialize', {
-      protocolVersion: '2025-03-26',
-      capabilities: {},
-      clientInfo: {
-        name: 'PeanutCafe',
-        version: '0.0.1',
+  private async initializeHttpSession(signal?: AbortSignal): Promise<void> {
+    await this.performHttpRequest(
+      'initialize',
+      {
+        protocolVersion: '2025-03-26',
+        capabilities: {},
+        clientInfo: {
+          name: 'PeanutCafe',
+          version: '0.0.1',
+        },
       },
-    });
+      signal,
+    );
 
-    await this.performHttpNotification('notifications/initialized');
+    await this.performHttpNotification('notifications/initialized', undefined, signal);
   }
 
   private async httpRequest(method: string, params: Record<string, unknown>): Promise<unknown> {
@@ -134,14 +147,17 @@ export class McpClientImpl {
     return this.performHttpRequest(method, params);
   }
 
-  private async performHttpRequest(method: string, params: Record<string, unknown>): Promise<unknown> {
+  private async performHttpRequest(method: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
     const id = ++this.requestId;
-    const response = await this.postHttp({
-      jsonrpc: '2.0',
-      id,
-      method,
-      params,
-    });
+    const response = await this.postHttp(
+      {
+        jsonrpc: '2.0',
+        id,
+        method,
+        params,
+      },
+      signal,
+    );
 
     const message = await this.parseHttpResponse(response, id);
     if (message?.error) {
@@ -151,17 +167,20 @@ export class McpClientImpl {
     return message?.result;
   }
 
-  private async performHttpNotification(method: string, params?: Record<string, unknown>): Promise<void> {
-    const response = await this.postHttp({
-      jsonrpc: '2.0',
-      method,
-      ...(params ? { params } : {}),
-    });
+  private async performHttpNotification(method: string, params?: Record<string, unknown>, signal?: AbortSignal): Promise<void> {
+    const response = await this.postHttp(
+      {
+        jsonrpc: '2.0',
+        method,
+        ...(params ? { params } : {}),
+      },
+      signal,
+    );
 
     await this.parseHttpResponse(response);
   }
 
-  private async postHttp(body: Record<string, unknown>): Promise<Response> {
+  private async postHttp(body: Record<string, unknown>, signal?: AbortSignal): Promise<Response> {
     if (!this.baseUrl) {
       throw new Error('Not HTTP mode');
     }
@@ -181,8 +200,12 @@ export class McpClientImpl {
         method: 'POST',
         headers,
         body: JSON.stringify(body),
+        signal,
       });
     } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        throw new Error(`HTTP request failed: ${error.message}`);
+      }
       throw new Error(`HTTP request failed: ${error instanceof Error ? error.message : String(error)}`);
     }
 
