@@ -6,7 +6,8 @@ export enum ServerStatus {
 }
 
 export interface McpServerConfig {
-  image: string;
+  image?: string; // 仅 STDIO 模式使用
+  url?: string; // 仅 HTTP 模式使用
   env?: Record<string, string>;
   enabled: boolean;
   timeout?: number;
