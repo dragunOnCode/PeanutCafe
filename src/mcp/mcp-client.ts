@@ -19,6 +19,7 @@ export class McpClientImpl {
   private connected = false;
   private requestId = 0;
   private connectPromise: Promise<void> | null = null;
+  private connectAttempt = 0;
   private readonly baseUrl: string | null = null;
   private readonly containerExec: ContainerExec | null = null;
   private readonly containerId: string | null = null;
@@ -57,8 +58,14 @@ export class McpClientImpl {
 
     if (this.baseUrl) {
       if (!this.connectPromise) {
+        const attempt = ++this.connectAttempt;
         this.connectPromise = this.initializeHttpSession()
           .then(() => {
+            if (attempt !== this.connectAttempt) {
+              this.sessionId = null;
+              return;
+            }
+
             this.connected = true;
             this.logger.log(`Connected to MCP server: ${this.baseUrl}`);
           })
@@ -76,10 +83,11 @@ export class McpClientImpl {
   }
 
   async disconnect(): Promise<void> {
-    if (!this.connected) {
+    if (!this.connected && !this.connectPromise) {
       return;
     }
 
+    this.connectAttempt++;
     this.connected = false;
     this.sessionId = null;
     this.pendingRequests.forEach(({ reject }) => reject(new Error('Disconnected')));
