@@ -268,5 +268,3 @@ export class McpClientImpl {
     }
   }
 }
-
-export { McpClientImpl as StandardMcpClient };
