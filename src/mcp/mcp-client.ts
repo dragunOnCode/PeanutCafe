@@ -72,15 +72,21 @@ export class McpClientImpl {
 
   private async httpRequest(method: string, params: Record<string, unknown>): Promise<unknown> {
     if (!this.baseUrl) throw new Error('Not HTTP mode');
+    if (!this.connected) throw new Error('Client not connected');
 
     const id = ++this.requestId;
     const body = JSON.stringify({ jsonrpc: '2.0', id, method, params });
 
-    const response = await fetch(this.baseUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body,
-    });
+    let response: Response;
+    try {
+      response = await fetch(this.baseUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+      });
+    } catch (error) {
+      throw new Error(`HTTP request failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
 
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);
@@ -114,6 +120,10 @@ export class McpClientImpl {
           reject(new Error('Request timeout'));
         }
       }, 30000);
+
+      setTimeout(() => {
+        this.pendingRequests.delete(id);
+      }, 35000);
     });
   }
 
