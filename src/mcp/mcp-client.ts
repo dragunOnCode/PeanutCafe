@@ -11,22 +11,25 @@ export class McpClientImpl {
   private containerId: string | null = null;
   private pendingRequests = new Map<number, { resolve: (value: unknown) => void; reject: (reason: unknown) => void }>();
 
+  // HTTP 模式构造函数
   constructor(baseUrl: string);
-  constructor(containerExec: { stdout: Readable; stdin: Writable }, containerId: string);
-  constructor(first: string | { stdout: Readable; stdin: Writable }, second?: string) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  constructor(containerExec: any, containerId: string);
+  constructor(first: string | any, second?: string) {
     if (typeof first === 'string') {
       this.baseUrl = first;
       this.connected = true;
     } else {
-      this.containerExec = first;
+      const exec = first as { stdout: { on: (event: string, cb: (data: Buffer) => void) => void }; stdin: Writable };
+      this.containerExec = exec as { stdout: Readable; stdin: Writable };
       this.containerId = second!;
       this.connected = false;
 
-      this.containerExec.stdout.on('data', (data: Buffer) => {
+      exec.stdout.on('data', (data: Buffer) => {
         this.handleMessage(data.toString());
       });
 
-      this.containerExec.stdout.on('close', () => {
+      exec.stdout.on('close', () => {
         this.connected = false;
         this.logger.log('MCP client disconnected');
       });

@@ -116,13 +116,15 @@ export class McpServerManager implements OnModuleInit, OnModuleDestroy {
     if (!info) return;
 
     await info.client.disconnect();
-    const container = this.docker.getContainer(info.containerId);
-    try {
-      await container.stop();
-      await container.remove();
-    } catch (e) {
-      const error = e as Error;
-      this.logger.warn(`Error stopping container ${name}: ${error.message}`);
+    if (info.containerId) {
+      const container = this.docker.getContainer(info.containerId);
+      try {
+        await container.stop();
+        await container.remove();
+      } catch (e) {
+        const error = e as Error;
+        this.logger.warn(`Error stopping container ${name}: ${error.message}`);
+      }
     }
     this.servers.delete(name);
   }
