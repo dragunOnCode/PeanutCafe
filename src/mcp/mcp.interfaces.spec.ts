@@ -1,4 +1,6 @@
-import { ServerStatus, McpServerConfig, IMcpClient } from './mcp.interfaces';
+import * as fs from 'fs';
+import * as path from 'path';
+import { ServerStatus, McpServerConfig, IMcpClient } from './index';
 
 describe('McpInterfaces', () => {
   describe('ServerStatus', () => {
@@ -19,7 +21,13 @@ describe('McpInterfaces', () => {
         profile: 'open-websearch',
       };
 
+      const configPath = path.resolve(process.cwd(), 'config', 'mcp-config.json');
+      const configFile = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as {
+        mcpServers: Record<string, McpServerConfig>;
+      };
+
       expect(config.profile).toBe('open-websearch');
+      expect(configFile.mcpServers['open-websearch'].profile).toBe('open-websearch');
     });
   });
 
@@ -38,6 +46,7 @@ describe('McpInterfaces', () => {
       expect(typeof client.listTools).toBe('function');
       expect(typeof client.callTool).toBe('function');
       expect(typeof client.isConnected).toBe('function');
+      expect(client.isConnected()).toBe(true);
     });
   });
 });

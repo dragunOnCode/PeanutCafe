@@ -1,4 +1,12 @@
-export * from './mcp.interfaces';
+export { ServerStatus } from './mcp.interfaces';
+export type {
+  IMcpClient,
+  McpClient,
+  McpServerConfig,
+  McpServerProfileName,
+  McpTool,
+  ServerInfo,
+} from './mcp.interfaces';
 export { McpClientImpl } from './mcp-client';
 export * from './mcp-server-manager';
 export * from './mcp-tool-registry';
