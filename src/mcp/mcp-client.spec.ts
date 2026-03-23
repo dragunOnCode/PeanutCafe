@@ -274,6 +274,95 @@ describe('McpClientImpl HTTP transport', () => {
     );
   });
 
+  it('aborts an in-flight HTTP connect and does not send initialized after disconnect', async () => {
+    let abortSignal: AbortSignal | undefined;
+    let rejectInitialize: ((reason?: unknown) => void) | undefined;
+    const initializeResponse = new Promise<Response>((_, reject) => {
+      rejectInitialize = reject;
+    });
+    const fetchMock = jest.fn<typeof fetch>().mockImplementationOnce((_input, init) => {
+      abortSignal = init?.signal as AbortSignal | undefined;
+      return initializeResponse;
+    });
+    global.fetch = fetchMock;
+
+    const client = new McpClientImpl('http://localhost:3001/mcp');
+
+    const pendingConnect = client.connect();
+    await Promise.resolve();
+
+    await client.disconnect();
+
+    expect(abortSignal?.aborted).toBe(true);
+
+    rejectInitialize!(new DOMException('The operation was aborted.', 'AbortError'));
+
+    await expect(pendingConnect).rejects.toThrow('HTTP request failed: The operation was aborted.');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(client.isConnected()).toBe(false);
+  });
+
+  it('clears any session id captured during a failed handshake before the next connect retry', async () => {
+    const fetchMock = jest
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { protocolVersion: '2025-03-26' } }), {
+          status: 200,
+          headers: {
+            'content-type': 'application/json',
+            'mcp-session-id': 'stale-session',
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: { message: 'init failed late' } }), {
+          status: 500,
+          statusText: 'Server Error',
+          headers: {
+            'content-type': 'application/json',
+            'mcp-session-id': 'stale-session',
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ jsonrpc: '2.0', id: 2, result: { protocolVersion: '2025-03-26' } }), {
+          status: 200,
+          headers: {
+            'content-type': 'application/json',
+            'mcp-session-id': 'fresh-session',
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(null, {
+          status: 202,
+          headers: {
+            'mcp-session-id': 'fresh-session',
+          },
+        }),
+      );
+    global.fetch = fetchMock;
+
+    const client = new McpClientImpl('http://localhost:3001/mcp');
+
+    await expect(client.connect()).rejects.toThrow('HTTP 500: Server Error');
+
+    await expect(client.connect()).resolves.toBeUndefined();
+
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock.mock.calls[2][1]!.headers).toEqual(
+      expect.not.objectContaining({
+        'mcp-session-id': 'stale-session',
+      }),
+    );
+    expect(fetchMock.mock.calls[2][1]!.headers).toEqual(
+      expect.objectContaining({
+        'Content-Type': 'application/json',
+        Accept: 'application/json, text/event-stream',
+      }),
+    );
+  });
+
   it('parses event-stream tool call responses and returns text content', async () => {
     const fetchMock = jest
       .fn<typeof fetch>()
