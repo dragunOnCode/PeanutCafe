@@ -225,6 +225,55 @@ describe('McpClientImpl HTTP transport', () => {
     });
   });
 
+  it('does not remain connected or retain session state if disconnect is called during an in-flight connect', async () => {
+    let resolveInitialize: ((response: Response) => void) | undefined;
+    const initializeResponse = new Promise<Response>((resolve) => {
+      resolveInitialize = resolve;
+    });
+    const fetchMock = jest
+      .fn<typeof fetch>()
+      .mockImplementationOnce(() => initializeResponse)
+      .mockResolvedValue(
+        new Response(null, {
+          status: 202,
+          headers: {
+            'mcp-session-id': 'session-race',
+          },
+        }),
+      );
+    global.fetch = fetchMock;
+
+    const client = new McpClientImpl('http://localhost:3001/mcp');
+
+    const pendingConnect = client.connect();
+    await Promise.resolve();
+
+    await client.disconnect();
+
+    resolveInitialize!(
+      new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { protocolVersion: '2025-03-26' } }), {
+        status: 200,
+        headers: {
+          'content-type': 'application/json',
+          'mcp-session-id': 'session-race',
+        },
+      }),
+    );
+
+    await pendingConnect;
+
+    expect(client.isConnected()).toBe(false);
+
+    fetchMock.mockClear();
+    await expect(client.connect()).resolves.toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[0][1]!.headers).toEqual(
+      expect.not.objectContaining({
+        'mcp-session-id': 'session-race',
+      }),
+    );
+  });
+
   it('parses event-stream tool call responses and returns text content', async () => {
     const fetchMock = jest
       .fn<typeof fetch>()
