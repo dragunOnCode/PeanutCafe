@@ -168,7 +168,7 @@ export class McpClientImpl {
 
   private async performHttpRequest(method: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
     const id = ++this.requestId;
-    const response = await this.postHttp(
+    const { response, abortController } = await this.postHttp(
       {
         jsonrpc: '2.0',
         id,
@@ -178,16 +178,22 @@ export class McpClientImpl {
       signal,
     );
 
-    const message = await this.parseHttpResponse(response, id);
-    if (message?.error) {
-      throw new Error(message.error.message || 'MCP error');
-    }
+    try {
+      const message = await this.parseHttpResponse(response, id);
+      if (message?.error) {
+        throw new Error(message.error.message || 'MCP error');
+      }
 
-    return message?.result;
+      return message?.result;
+    } finally {
+      if (abortController) {
+        this.activeHttpAbortControllers.delete(abortController);
+      }
+    }
   }
 
   private async performHttpNotification(method: string, params?: Record<string, unknown>, signal?: AbortSignal): Promise<void> {
-    const response = await this.postHttp(
+    const { response, abortController } = await this.postHttp(
       {
         jsonrpc: '2.0',
         method,
@@ -196,13 +202,22 @@ export class McpClientImpl {
       signal,
     );
 
-    const message = await this.parseHttpResponse(response);
-    if (message?.error) {
-      throw new Error(message.error.message || 'MCP error');
+    try {
+      const message = await this.parseHttpResponse(response);
+      if (message?.error) {
+        throw new Error(message.error.message || 'MCP error');
+      }
+    } finally {
+      if (abortController) {
+        this.activeHttpAbortControllers.delete(abortController);
+      }
     }
   }
 
-  private async postHttp(body: Record<string, unknown>, signal?: AbortSignal): Promise<Response> {
+  private async postHttp(
+    body: Record<string, unknown>,
+    signal?: AbortSignal,
+  ): Promise<{ response: Response; abortController: AbortController | null }> {
     if (!this.baseUrl) {
       throw new Error('Not HTTP mode');
     }
@@ -234,10 +249,6 @@ export class McpClientImpl {
         throw new Error(CONNECT_ABORTED_MESSAGE);
       }
       throw new Error(`HTTP request failed: ${error instanceof Error ? error.message : String(error)}`);
-    } finally {
-      if (abortController) {
-        this.activeHttpAbortControllers.delete(abortController);
-      }
     }
 
     this.persistSessionId(response);
@@ -246,7 +257,7 @@ export class McpClientImpl {
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);
     }
 
-    return response;
+    return { response, abortController };
   }
 
   private persistSessionId(response: Response): void {
@@ -257,7 +268,15 @@ export class McpClientImpl {
   }
 
   private async parseHttpResponse(response: Response, expectedId?: number): Promise<JsonRpcResponseEnvelope | undefined> {
-    const rawBody = await response.text();
+    let rawBody: string;
+    try {
+      rawBody = await response.text();
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        throw new Error(CONNECT_ABORTED_MESSAGE);
+      }
+      throw error;
+    }
     if (!rawBody.trim()) {
       return undefined;
     }
