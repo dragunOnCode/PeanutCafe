@@ -12,6 +12,15 @@ interface JsonRpcResponseEnvelope {
   result?: unknown;
 }
 
+interface ResponseLike {
+  ok: boolean;
+  status: number;
+  statusText: string;
+  headers?: { get?: (name: string) => string | null } | Record<string, string | undefined>;
+  text?: () => Promise<string>;
+  json?: () => Promise<unknown>;
+}
+
 type ContainerExec = { stdout: Readable; stdin: Writable };
 const CONNECT_ABORTED_MESSAGE = 'HTTP request failed: The operation was aborted.';
 
@@ -23,6 +32,7 @@ export class McpClientImpl {
   private connectAttempt = 0;
   private connectAbortController: AbortController | null = null;
   private activeHttpAbortControllers = new Set<AbortController>();
+  private skipInitializedNotificationOnce = false;
   private readonly baseUrl: string | null = null;
   private readonly containerExec: ContainerExec | null = null;
   private readonly containerId: string | null = null;
@@ -152,6 +162,11 @@ export class McpClientImpl {
       signal,
     );
 
+    if (this.skipInitializedNotificationOnce) {
+      this.skipInitializedNotificationOnce = false;
+      return;
+    }
+
     await this.performHttpNotification('notifications/initialized', undefined, signal);
   }
 
@@ -180,6 +195,9 @@ export class McpClientImpl {
 
     try {
       const message = await this.parseHttpResponse(response, id);
+      if (method === 'initialize' && this.isLegacyInitializeResponse(response)) {
+        this.skipInitializedNotificationOnce = true;
+      }
       if (message?.error) {
         throw new Error(message.error.message || 'MCP error');
       }
@@ -217,7 +235,7 @@ export class McpClientImpl {
   private async postHttp(
     body: Record<string, unknown>,
     signal?: AbortSignal,
-  ): Promise<{ response: Response; abortController: AbortController | null }> {
+  ): Promise<{ response: ResponseLike; abortController: AbortController | null }> {
     if (!this.baseUrl) {
       throw new Error('Not HTTP mode');
     }
@@ -236,15 +254,18 @@ export class McpClientImpl {
       this.activeHttpAbortControllers.add(abortController);
     }
 
-    let response: Response;
+    let response: ResponseLike;
     try {
-      response = await fetch(this.baseUrl, {
+      response = (await fetch(this.baseUrl, {
         method: 'POST',
         headers,
         body: JSON.stringify(body),
         signal: signal ?? abortController?.signal,
-      });
+      })) as ResponseLike;
     } catch (error) {
+      if (abortController) {
+        this.activeHttpAbortControllers.delete(abortController);
+      }
       if (error instanceof DOMException && error.name === 'AbortError') {
         throw new Error(CONNECT_ABORTED_MESSAGE);
       }
@@ -254,23 +275,26 @@ export class McpClientImpl {
     this.persistSessionId(response);
 
     if (!response.ok) {
+      if (abortController) {
+        this.activeHttpAbortControllers.delete(abortController);
+      }
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);
     }
 
     return { response, abortController };
   }
 
-  private persistSessionId(response: Response): void {
-    const sessionId = response.headers.get('mcp-session-id');
+  private persistSessionId(response: ResponseLike): void {
+    const sessionId = this.getHeader(response, 'mcp-session-id');
     if (sessionId) {
       this.sessionId = sessionId;
     }
   }
 
-  private async parseHttpResponse(response: Response, expectedId?: number): Promise<JsonRpcResponseEnvelope | undefined> {
+  private async parseHttpResponse(response: ResponseLike, expectedId?: number): Promise<JsonRpcResponseEnvelope | undefined> {
     let rawBody: string;
     try {
-      rawBody = await response.text();
+      rawBody = await this.readResponseBody(response);
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') {
         throw new Error(CONNECT_ABORTED_MESSAGE);
@@ -281,7 +305,7 @@ export class McpClientImpl {
       return undefined;
     }
 
-    const contentType = response.headers.get('content-type') ?? '';
+    const contentType = this.getHeader(response, 'content-type') ?? '';
     if (contentType.includes('text/event-stream')) {
       return this.parseEventStream(rawBody, expectedId);
     }
@@ -292,6 +316,36 @@ export class McpClientImpl {
     }
 
     return message;
+  }
+
+  private getHeader(response: ResponseLike, name: string): string | null {
+    const headers = response.headers;
+    if (!headers) {
+      return null;
+    }
+
+    if (typeof headers.get === 'function') {
+      return headers.get(name);
+    }
+
+    const value = headers[name] ?? headers[name.toLowerCase()] ?? headers[name.toUpperCase()];
+    return typeof value === 'string' ? value : null;
+  }
+
+  private async readResponseBody(response: ResponseLike): Promise<string> {
+    if (typeof response.text === 'function') {
+      return response.text();
+    }
+
+    if (typeof response.json === 'function') {
+      return JSON.stringify(await response.json());
+    }
+
+    return '';
+  }
+
+  private isLegacyInitializeResponse(response: ResponseLike): boolean {
+    return typeof response.json === 'function' && typeof response.text !== 'function' && !response.headers;
   }
 
   private parseEventStream(body: string, expectedId?: number): JsonRpcResponseEnvelope | undefined {
