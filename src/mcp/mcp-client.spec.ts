@@ -957,6 +957,96 @@ describe('McpClientImpl HTTP transport', () => {
     await expect(client.callTool('search', { query: 'peanut cafe' })).resolves.toBe('tool output');
   });
 
+  it('supports the open-websearch SSE initialize and tools/list compatibility flow', async () => {
+    const tools = [
+      {
+        name: 'search_web',
+        description: 'Search the web for results',
+        inputSchema: { type: 'object' },
+      },
+      {
+        name: 'fetch_page',
+        description: 'Fetch a page by URL',
+        inputSchema: { type: 'object' },
+      },
+    ];
+    const fetchMock = jest
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(
+          ['event: message', 'data: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-03-26"}}', ''].join('\n'),
+          {
+            status: 200,
+            headers: {
+              'content-type': 'text/event-stream',
+              'mcp-session-id': 'open-websearch-session',
+            },
+          },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(null, {
+          status: 202,
+          headers: {
+            'mcp-session-id': 'open-websearch-session',
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          [
+            'event: message',
+            'data: {"jsonrpc":"2.0","method":"notifications/tools/list_changed"}',
+            '',
+            'event: message',
+            `data: ${JSON.stringify({ jsonrpc: '2.0', id: 2, result: { tools } })}`,
+            '',
+          ].join('\n'),
+          {
+            status: 200,
+            headers: {
+              'content-type': 'text/event-stream',
+              'mcp-session-id': 'open-websearch-session',
+            },
+          },
+        ),
+      );
+    global.fetch = fetchMock;
+
+    const client = new McpClientImpl('http://localhost:3001/mcp');
+
+    await client.connect();
+    const listedTools = await client.listTools();
+
+    expect(listedTools).toEqual(tools);
+    expect(listedTools.map((tool) => tool.name)).toEqual(['search_web', 'fetch_page']);
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls[0][1]).toEqual(
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({
+          'Content-Type': 'application/json',
+          Accept: 'application/json, text/event-stream',
+        }),
+      }),
+    );
+    expect(fetchMock.mock.calls[1][1]).toEqual(
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          'mcp-session-id': 'open-websearch-session',
+        }),
+      }),
+    );
+    expect(fetchMock.mock.calls[2][1]).toEqual(
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          'mcp-session-id': 'open-websearch-session',
+        }),
+      }),
+    );
+  });
+
   it('cleans up operation abort controllers when fetch rejects', async () => {
     const fetchMock = jest
       .fn<typeof fetch>()

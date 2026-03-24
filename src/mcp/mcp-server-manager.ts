@@ -2,6 +2,7 @@ import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/commo
 import Docker from 'dockerode';
 import * as fs from 'fs';
 import * as path from 'path';
+import { Readable, Writable } from 'stream';
 import { IMcpClient, McpServerConfig, ServerStatus, ServerInfo } from './mcp.interfaces';
 import { McpClientImpl } from './mcp-client';
 
@@ -187,7 +188,7 @@ export class McpServerManager implements OnModuleInit, OnModuleDestroy {
 
     return {
       client: new McpClientImpl(
-        { stdout: stream as unknown as NodeJS.ReadableStream, stdin: stream as unknown as NodeJS.WritableStream },
+        { stdout: stream as unknown as Readable, stdin: stream as unknown as Writable },
         containerId,
       ),
       containerId,
