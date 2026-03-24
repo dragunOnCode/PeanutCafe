@@ -492,6 +492,71 @@ describe('McpClientImpl HTTP transport', () => {
     expect(client.isConnected()).toBe(false);
   });
 
+  it('rejects an in-flight HTTP operation if disconnect happens while the response body is still being read', async () => {
+    let operationSignal: AbortSignal | undefined;
+    let rejectBodyRead: ((reason?: unknown) => void) | undefined;
+    const delayedBody = new Promise<string>((_, reject) => {
+      rejectBodyRead = reject;
+    });
+    const delayedResponse = {
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      headers: {
+        get: (name: string) => {
+          const normalized = name.toLowerCase();
+          if (normalized === 'content-type') {
+            return 'application/json';
+          }
+          if (normalized === 'mcp-session-id') {
+            return 'body-delay';
+          }
+          return null;
+        },
+      },
+      text: jest.fn(() => delayedBody),
+    } as unknown as Response;
+    const fetchMock = jest
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { protocolVersion: '2025-03-26' } }), {
+          status: 200,
+          headers: {
+            'content-type': 'application/json',
+            'mcp-session-id': 'body-delay',
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(null, {
+          status: 202,
+          headers: {
+            'mcp-session-id': 'body-delay',
+          },
+        }),
+      )
+      .mockImplementationOnce((_input, init) => {
+        operationSignal = init?.signal as AbortSignal | undefined;
+        return Promise.resolve(delayedResponse);
+      });
+    global.fetch = fetchMock;
+
+    const client = new McpClientImpl('http://localhost:3001/mcp');
+
+    await client.connect();
+    const pendingListTools = client.listTools();
+    await Promise.resolve();
+
+    await client.disconnect();
+
+    expect(operationSignal?.aborted).toBe(true);
+
+    rejectBodyRead!(new DOMException('The operation was aborted.', 'AbortError'));
+
+    await expect(pendingListTools).rejects.toThrow('HTTP request failed: The operation was aborted.');
+    expect(client.isConnected()).toBe(false);
+  });
+
   it('starts a fresh handshake for an immediate reconnect after disconnect cancels an in-flight connect', async () => {
     let rejectFirstInitialize: ((reason?: unknown) => void) | undefined;
     const firstInitialize = new Promise<Response>((_, reject) => {
