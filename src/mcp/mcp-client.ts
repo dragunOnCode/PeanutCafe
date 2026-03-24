@@ -114,11 +114,17 @@ export class McpClientImpl {
   }
 
   async listTools(): Promise<McpTool[]> {
+    if (this.baseUrl && !this.connected) {
+      await this.connect();
+    }
     const response = this.baseUrl ? await this.httpRequest('tools/list', {}) : await this.sendRequest('tools/list', {});
     return (response as { tools?: McpTool[] }).tools ?? [];
   }
 
   async callTool(name: string, args: Record<string, unknown>): Promise<string> {
+    if (this.baseUrl && !this.connected) {
+      await this.connect();
+    }
     const response = this.baseUrl
       ? await this.httpRequest('tools/call', { name, arguments: args })
       : await this.sendRequest('tools/call', { name, arguments: args });
@@ -187,7 +193,10 @@ export class McpClientImpl {
       signal,
     );
 
-    await this.parseHttpResponse(response);
+    const message = await this.parseHttpResponse(response);
+    if (message?.error) {
+      throw new Error(message.error.message || 'MCP error');
+    }
   }
 
   private async postHttp(body: Record<string, unknown>, signal?: AbortSignal): Promise<Response> {
