@@ -1,8 +1,8 @@
-import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import Docker from 'dockerode';
 import * as fs from 'fs';
 import * as path from 'path';
-import { McpServerConfig, ServerStatus, McpClient, ServerInfo } from './mcp.interfaces';
+import { IMcpClient, McpServerConfig, ServerStatus, ServerInfo } from './mcp.interfaces';
 import { McpClientImpl } from './mcp-client';
 
 interface McpConfig {
@@ -54,58 +54,18 @@ export class McpServerManager implements OnModuleInit, OnModuleDestroy {
 
     this.logger.log(`Starting MCP server: ${name}`);
 
-    let client: McpClient;
+    const normalizedConfig = this.normalizeConfig(config);
+    const { client, containerId } = await this.createClient(normalizedConfig, name);
 
-    if (config.url) {
-      // HTTP 模式: 直接连接
-      client = new McpClientImpl(config.url);
-      await client.connect();
+    await client.connect();
 
-      this.servers.set(name, {
-        name,
-        config,
-        status: ServerStatus.RUNNING,
-        client,
-      });
-    } else if (config.image) {
-      // STDIO 模式: Docker spawning
-      const container = await this.docker.createContainer({
-        Image: config.image,
-        Env: this.resolveEnvVars(config.env || {}),
-        AttachStdout: true,
-        AttachStderr: true,
-        Tty: false,
-      });
-
-      await container.start();
-
-      const containerInfo = await container.inspect();
-      const containerId = containerInfo.Id;
-
-      const exec = await container.exec({
-        AttachStdout: true,
-        AttachStdin: true,
-        Cmd: ['npx', '-y', '@brave/brave-search-mcp-server', '--transport', 'stdio'],
-      });
-
-      const stream = await exec.start({ hijack: true, stdin: true });
-
-      client = new McpClientImpl(
-        { stdout: stream as unknown as NodeJS.ReadableStream, stdin: stream as unknown as NodeJS.WritableStream },
-        containerId,
-      );
-      await client.connect();
-
-      this.servers.set(name, {
-        name,
-        config,
-        status: ServerStatus.RUNNING,
-        client,
-        containerId,
-      });
-    } else {
-      throw new Error(`MCP server config must have either url or image: ${name}`);
-    }
+    this.servers.set(name, {
+      name,
+      config: normalizedConfig,
+      status: ServerStatus.RUNNING,
+      client,
+      containerId,
+    });
 
     this.logger.log(`MCP server started: ${name}`);
   }
@@ -133,7 +93,7 @@ export class McpServerManager implements OnModuleInit, OnModuleDestroy {
     return info?.status || ServerStatus.STOPPED;
   }
 
-  getClient(name: string): McpClient {
+  getClient(name: string): IMcpClient {
     const info = this.servers.get(name);
     if (!info) {
       throw new Error(`MCP server not found: ${name}`);
@@ -145,6 +105,55 @@ export class McpServerManager implements OnModuleInit, OnModuleDestroy {
     for (const name of Array.from(this.servers.keys())) {
       await this.stopServer(name);
     }
+  }
+
+  private normalizeConfig(config: McpServerConfig): McpServerConfig {
+    return {
+      ...config,
+      profile: config.profile ?? 'standard',
+    };
+  }
+
+  private async createClient(
+    config: McpServerConfig,
+    serverName: string,
+  ): Promise<{ client: IMcpClient; containerId?: string }> {
+    if (config.url) {
+      return { client: new McpClientImpl(config.url) };
+    }
+
+    if (config.image) {
+      const container = await this.docker.createContainer({
+        Image: config.image,
+        Env: this.resolveEnvVars(config.env || {}),
+        AttachStdout: true,
+        AttachStderr: true,
+        Tty: false,
+      });
+
+      await container.start();
+
+      const containerInfo = await container.inspect();
+      const containerId = containerInfo.Id;
+
+      const exec = await container.exec({
+        AttachStdout: true,
+        AttachStdin: true,
+        Cmd: ['npx', '-y', '@brave/brave-search-mcp-server', '--transport', 'stdio'],
+      });
+
+      const stream = await exec.start({ hijack: true, stdin: true });
+
+      return {
+        client: new McpClientImpl(
+          { stdout: stream as unknown as NodeJS.ReadableStream, stdin: stream as unknown as NodeJS.WritableStream },
+          containerId,
+        ),
+        containerId,
+      };
+    }
+
+    throw new Error(`MCP server config must have either url or image: ${serverName}`);
   }
 
   private resolveEnvVars(env: Record<string, string>): string[] {

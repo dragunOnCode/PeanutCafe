@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { McpServerManager } from './mcp-server-manager';
 import { ToolRegistry, Tool } from '../agents/tools/tool-registry';
-import { McpTool, McpServerConfig } from './mcp.interfaces';
+import { IMcpClient, McpTool, McpServerConfig } from './mcp.interfaces';
 
 interface McpConfig {
   mcpServers?: Record<string, McpServerConfig>;
@@ -47,7 +47,7 @@ export class McpToolRegistry implements OnModuleInit {
   }
 
   async registerServerTools(serverName: string): Promise<void> {
-    const client = this.mcpServerManager.getClient(serverName);
+    const client: IMcpClient = this.mcpServerManager.getClient(serverName);
     const tools = await client.listTools();
 
     for (const tool of tools) {
