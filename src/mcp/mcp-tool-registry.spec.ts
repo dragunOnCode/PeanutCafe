@@ -33,6 +33,17 @@ describe('McpToolRegistry', () => {
 
     await mcpToolRegistry.registerServerTools('brave-search');
 
-    expect(toolRegistry.registerTool).toHaveBeenCalled();
+    expect(toolRegistry.registerTool).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'brave-search.web_search',
+        description: 'Search the web',
+        parameters: {},
+        execute: expect.any(Function),
+      }),
+    );
+
+    const registeredTool = toolRegistry.registerTool.mock.calls[0][0];
+    await expect(registeredTool.execute({ query: 'coffee' })).resolves.toBe('result');
+    expect(mockClient.callTool).toHaveBeenCalledWith('web_search', { query: 'coffee' });
   });
 });

@@ -1,3 +1,9 @@
+const mockClientFactory = jest.fn();
+
+jest.mock('./mcp-client', () => ({
+  McpClientImpl: jest.fn().mockImplementation((...args: unknown[]) => mockClientFactory(...args)),
+}));
+
 import { McpServerManager } from './mcp-server-manager';
 import { IMcpClient, ServerStatus } from './mcp.interfaces';
 
@@ -17,6 +23,7 @@ describe('McpServerManager', () => {
   });
 
   afterEach(() => {
+    mockClientFactory.mockReset();
     jest.restoreAllMocks();
   });
 
@@ -30,7 +37,8 @@ describe('McpServerManager', () => {
 
   it('creates a standard client for HTTP servers with configured profile', async () => {
     const client = createMockClient();
-    const createClientSpy = jest.spyOn(manager as any, 'createClient').mockResolvedValue({ client });
+    mockClientFactory.mockReturnValue(client);
+    const createHttpClientSpy = jest.spyOn(manager as any, 'createHttpClient');
 
     (manager as any).config = {
       openwebsearch: {
@@ -42,7 +50,7 @@ describe('McpServerManager', () => {
 
     await (manager as any).startServer('openwebsearch');
 
-    expect(createClientSpy).toHaveBeenCalledWith(
+    expect(createHttpClientSpy).toHaveBeenCalledWith(
       expect.objectContaining({
         url: 'http://localhost:3001/mcp',
         profile: 'open-websearch',
@@ -53,7 +61,8 @@ describe('McpServerManager', () => {
 
   it('defaults profile to standard when omitted', async () => {
     const client = createMockClient();
-    const createClientSpy = jest.spyOn(manager as any, 'createClient').mockResolvedValue({ client });
+    mockClientFactory.mockReturnValue(client);
+    const createHttpClientSpy = jest.spyOn(manager as any, 'createHttpClient');
 
     (manager as any).config = {
       standardServer: {
@@ -64,7 +73,7 @@ describe('McpServerManager', () => {
 
     await (manager as any).startServer('standardServer');
 
-    expect(createClientSpy).toHaveBeenCalledWith(
+    expect(createHttpClientSpy).toHaveBeenCalledWith(
       expect.objectContaining({
         url: 'http://localhost:3002/mcp',
         profile: 'standard',
@@ -75,7 +84,12 @@ describe('McpServerManager', () => {
 
   it('connects the created client and marks server RUNNING', async () => {
     const client = createMockClient();
-    jest.spyOn(manager as any, 'createClient').mockResolvedValue({ client });
+    mockClientFactory.mockReturnValue(client);
+    const connectOrder: string[] = [];
+    client.connect.mockImplementation(async () => {
+      connectOrder.push('connect');
+      expect(manager.getServerStatus('standardServer')).toBe(ServerStatus.STOPPED);
+    });
 
     (manager as any).config = {
       standardServer: {
@@ -86,8 +100,26 @@ describe('McpServerManager', () => {
 
     await (manager as any).startServer('standardServer');
 
+    expect(connectOrder).toEqual(['connect']);
     expect(client.connect).toHaveBeenCalledTimes(1);
     expect(manager.getServerStatus('standardServer')).toBe(ServerStatus.RUNNING);
     expect(manager.getClient('standardServer')).toBe(client);
+  });
+
+  it('fails clearly for unsupported HTTP profiles', async () => {
+    const client = createMockClient();
+    mockClientFactory.mockReturnValue(client);
+
+    (manager as any).config = {
+      incompatibleServer: {
+        url: 'http://localhost:3003/mcp',
+        enabled: true,
+        profile: 'unsupported-profile',
+      },
+    };
+
+    await expect((manager as any).startServer('incompatibleServer')).rejects.toThrow(
+      'Unsupported MCP server profile "unsupported-profile" for HTTP server incompatibleServer',
+    );
   });
 });
