@@ -181,7 +181,11 @@ export class McpClientImpl {
     return this.performHttpRequest(method, params);
   }
 
-  private async performHttpRequest(method: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
+  private async performHttpRequest(
+    method: string,
+    params: Record<string, unknown>,
+    signal?: AbortSignal,
+  ): Promise<unknown> {
     const id = ++this.requestId;
     const { response, abortController } = await this.postHttp(
       {
@@ -210,7 +214,11 @@ export class McpClientImpl {
     }
   }
 
-  private async performHttpNotification(method: string, params?: Record<string, unknown>, signal?: AbortSignal): Promise<void> {
+  private async performHttpNotification(
+    method: string,
+    params?: Record<string, unknown>,
+    signal?: AbortSignal,
+  ): Promise<void> {
     const { response, abortController } = await this.postHttp(
       {
         jsonrpc: '2.0',
@@ -291,7 +299,10 @@ export class McpClientImpl {
     }
   }
 
-  private async parseHttpResponse(response: ResponseLike, expectedId?: number): Promise<JsonRpcResponseEnvelope | undefined> {
+  private async parseHttpResponse(
+    response: ResponseLike,
+    expectedId?: number,
+  ): Promise<JsonRpcResponseEnvelope | undefined> {
     let rawBody: string;
     try {
       rawBody = await this.readResponseBody(response);

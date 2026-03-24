@@ -22,7 +22,7 @@ export class PlannerService {
     try {
       const response = await this.llmAdapter.generate(prompt, context);
       const tasks = JSON.parse(response.content) as Task[];
-      return tasks.map(t => ({ ...t, status: 'pending' as const }));
+      return tasks.map((t) => ({ ...t, status: 'pending' as const }));
     } catch {
       return [{ id: '1', description: task, status: 'pending' }];
     }

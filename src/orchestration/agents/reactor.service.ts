@@ -6,17 +6,14 @@ import type { Task, ReasoningStep } from '../state/workflow.state';
 export class ReactorService {
   constructor(private readonly llmAdapter: ILLMAdapter) {}
 
-  async *execute(
-    task: Task,
-    context: AgentContext,
-  ): AsyncGenerator<ReasoningStep> {
+  async *execute(task: Task, context: AgentContext): AsyncGenerator<ReasoningStep> {
     let stepId = 1;
     let observation = '';
 
     while (!this.isComplete(observation) && stepId <= 10) {
       const thought = await this.reason(task, observation, context);
       const action = await this.act(thought, task, context);
-      observation = await this.observe(action, context);
+      observation = this.observe(action);
 
       yield {
         id: String(stepId++),
@@ -27,11 +24,7 @@ export class ReactorService {
     }
   }
 
-  private async reason(
-    task: Task,
-    observation: string,
-    context: AgentContext,
-  ): Promise<string> {
+  private async reason(task: Task, observation: string, context: AgentContext): Promise<string> {
     const prompt = `任务：${task.description}
 当前进度：${observation || '刚开始'}
 
@@ -51,7 +44,7 @@ export class ReactorService {
     return response.content;
   }
 
-  private async observe(action: string, context: AgentContext): Promise<string> {
+  private observe(action: string): string {
     return `观察：${action} 已执行`;
   }
 

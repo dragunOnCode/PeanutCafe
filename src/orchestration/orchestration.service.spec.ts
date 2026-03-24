@@ -4,12 +4,7 @@ describe('OrchestrationService', () => {
   let service: OrchestrationService;
 
   beforeEach(() => {
-    service = new OrchestrationService(
-      {} as any,
-      {} as any,
-      {} as any,
-      {} as any,
-    );
+    service = new OrchestrationService({} as any, {} as any, {} as any, {} as any);
   });
 
   it('should be instantiable', () => {

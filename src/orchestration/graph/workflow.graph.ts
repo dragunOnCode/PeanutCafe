@@ -4,4 +4,4 @@ export const WORKFLOW_NODES = {
   RUN_TASK: 'run_next_task',
 } as const;
 
-export type WorkflowNodeName = typeof WORKFLOW_NODES[keyof typeof WORKFLOW_NODES];
+export type WorkflowNodeName = (typeof WORKFLOW_NODES)[keyof typeof WORKFLOW_NODES];

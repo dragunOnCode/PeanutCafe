@@ -7,12 +7,7 @@ import { AgentsModule } from '../agents/agents.module';
 
 @Module({
   imports: [AgentsModule],
-  providers: [
-    OrchestrationService,
-    CotWriterService,
-    PlannerService,
-    ReactorService,
-  ],
+  providers: [OrchestrationService, CotWriterService, PlannerService, ReactorService],
   exports: [OrchestrationService],
 })
 export class OrchestrationModule {}

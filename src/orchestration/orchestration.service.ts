@@ -17,11 +17,7 @@ export class OrchestrationService {
     private readonly reactor: ReactorService,
   ) {}
 
-  async executeWorkflow(
-    sessionId: string,
-    userMessage: string,
-    mentionedAgents: string[],
-  ): Promise<void> {
+  async executeWorkflow(sessionId: string, userMessage: string, mentionedAgents: string[]): Promise<void> {
     let state: WorkflowState = {
       sessionId,
       messages: [],
@@ -42,16 +38,16 @@ export class OrchestrationService {
     }
   }
 
-  private async hydrateSessionState(state: WorkflowState): Promise<WorkflowState> {
+  private hydrateSessionState(state: WorkflowState): WorkflowState {
     this.logger.log(`Hydrating session state for ${state.sessionId}`);
     return state;
   }
 
-  private async routeMessage(
+  private routeMessage(
     state: WorkflowState,
     userMessage: string,
     mentionedAgents: string[],
-  ): Promise<WorkflowState> {
+  ): WorkflowState {
     const mention = parseMention(userMessage);
     const nextAgent = mention || mentionedAgents[0] || 'Claude';
 
@@ -93,7 +89,7 @@ export class OrchestrationService {
       state.sessionId,
       agent.id,
       agent.name,
-      tasks.map(t => t.description).join('\n'),
+      tasks.map((t) => t.description).join('\n'),
       steps,
       handoffMention ? `@${handoffMention}` : undefined,
     );

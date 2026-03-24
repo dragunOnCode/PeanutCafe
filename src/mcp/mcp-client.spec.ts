@@ -259,7 +259,11 @@ describe('McpClientImpl HTTP transport', () => {
         },
         text: () =>
           Promise.resolve(
-            ['event: message', 'data: {"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"canonical output"}]}}', ''].join('\n'),
+            [
+              'event: message',
+              'data: {"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"canonical output"}]}}',
+              '',
+            ].join('\n'),
           ),
       } as Response);
     global.fetch = fetchMock;
@@ -302,13 +306,16 @@ describe('McpClientImpl HTTP transport', () => {
         }),
       )
       .mockResolvedValueOnce(
-        new Response(JSON.stringify({ jsonrpc: '2.0', id: 2, result: { content: [{ type: 'text', text: 'fresh tool output' }] } }), {
-          status: 200,
-          headers: {
-            'content-type': 'application/json',
-            'mcp-session-id': 'self-call',
+        new Response(
+          JSON.stringify({ jsonrpc: '2.0', id: 2, result: { content: [{ type: 'text', text: 'fresh tool output' }] } }),
+          {
+            status: 200,
+            headers: {
+              'content-type': 'application/json',
+              'mcp-session-id': 'self-call',
+            },
           },
-        }),
+        ),
       );
     global.fetch = fetchMock;
 
@@ -681,13 +688,20 @@ describe('McpClientImpl HTTP transport', () => {
         }),
       )
       .mockResolvedValueOnce(
-        new Response(JSON.stringify({ jsonrpc: '2.0', id: 3, result: { tools: [{ name: 'search', description: 'Search the web', inputSchema: { type: 'object' } }] } }), {
-          status: 200,
-          headers: {
-            'content-type': 'application/json',
-            'mcp-session-id': 'fresh-retry',
+        new Response(
+          JSON.stringify({
+            jsonrpc: '2.0',
+            id: 3,
+            result: { tools: [{ name: 'search', description: 'Search the web', inputSchema: { type: 'object' } }] },
+          }),
+          {
+            status: 200,
+            headers: {
+              'content-type': 'application/json',
+              'mcp-session-id': 'fresh-retry',
+            },
           },
-        }),
+        ),
       );
     global.fetch = fetchMock;
 
