@@ -183,6 +183,51 @@ describe('McpClientImpl HTTP transport', () => {
     });
   });
 
+  it('parses lightweight JSON-like fetch response doubles without full Response APIs', async () => {
+    const tools = [
+      {
+        name: 'search',
+        description: 'Search the web',
+        inputSchema: { type: 'object' },
+      },
+    ];
+    const fetchMock = jest
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        headers: {
+          'content-type': 'application/json',
+          'mcp-session-id': 'lightweight',
+        },
+        json: () => Promise.resolve({ jsonrpc: '2.0', id: 1, result: { protocolVersion: '2025-03-26' } }),
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 202,
+        statusText: 'Accepted',
+        headers: {
+          'mcp-session-id': 'lightweight',
+        },
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        headers: {
+          'content-type': 'application/json',
+          'mcp-session-id': 'lightweight',
+        },
+        json: () => Promise.resolve({ jsonrpc: '2.0', id: 2, result: { tools } }),
+      } as Response);
+    global.fetch = fetchMock;
+
+    const client = new McpClientImpl('http://localhost:3001/mcp');
+
+    await expect(client.listTools()).resolves.toEqual(tools);
+  });
+
   it('self-connects for callTool on a fresh HTTP client', async () => {
     const fetchMock = jest
       .fn<typeof fetch>()
@@ -794,5 +839,74 @@ describe('McpClientImpl HTTP transport', () => {
 
     await client.connect();
     await expect(client.callTool('search', { query: 'peanut cafe' })).resolves.toBe('tool output');
+  });
+
+  it('cleans up operation abort controllers when fetch rejects', async () => {
+    const fetchMock = jest
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { protocolVersion: '2025-03-26' } }), {
+          status: 200,
+          headers: {
+            'content-type': 'application/json',
+            'mcp-session-id': 'cleanup-fetch-error',
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(null, {
+          status: 202,
+          headers: {
+            'mcp-session-id': 'cleanup-fetch-error',
+          },
+        }),
+      )
+      .mockRejectedValueOnce(new Error('network broke'));
+    global.fetch = fetchMock;
+
+    const client = new McpClientImpl('http://localhost:3001/mcp');
+    await client.connect();
+
+    await expect(client.listTools()).rejects.toThrow('HTTP request failed: network broke');
+    expect((client as any).activeHttpAbortControllers.size).toBe(0);
+  });
+
+  it('cleans up operation abort controllers when a non-ok response is returned', async () => {
+    const fetchMock = jest
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { protocolVersion: '2025-03-26' } }), {
+          status: 200,
+          headers: {
+            'content-type': 'application/json',
+            'mcp-session-id': 'cleanup-non-ok',
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(null, {
+          status: 202,
+          headers: {
+            'mcp-session-id': 'cleanup-non-ok',
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: { message: 'boom' } }), {
+          status: 503,
+          statusText: 'Service Unavailable',
+          headers: {
+            'content-type': 'application/json',
+            'mcp-session-id': 'cleanup-non-ok',
+          },
+        }),
+      );
+    global.fetch = fetchMock;
+
+    const client = new McpClientImpl('http://localhost:3001/mcp');
+    await client.connect();
+
+    await expect(client.listTools()).rejects.toThrow('HTTP 503: Service Unavailable');
+    expect((client as any).activeHttpAbortControllers.size).toBe(0);
   });
 });
