@@ -228,6 +228,59 @@ describe('McpClientImpl HTTP transport', () => {
     await expect(client.listTools()).resolves.toEqual(tools);
   });
 
+  it('recognizes canonical-cased lightweight header keys for event-stream responses and session ids', async () => {
+    const fetchMock = jest
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        headers: {
+          'Content-Type': 'application/json',
+          'Mcp-Session-Id': 'canonical-session',
+        },
+        json: () => Promise.resolve({ jsonrpc: '2.0', id: 1, result: { protocolVersion: '2025-03-26' } }),
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 202,
+        statusText: 'Accepted',
+        headers: {
+          'Mcp-Session-Id': 'canonical-session',
+        },
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        headers: {
+          'Content-Type': 'text/event-stream',
+          'Mcp-Session-Id': 'canonical-session',
+        },
+        text: () =>
+          Promise.resolve(
+            ['event: message', 'data: {"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"canonical output"}]}}', ''].join('\n'),
+          ),
+      } as Response);
+    global.fetch = fetchMock;
+
+    const client = new McpClientImpl('http://localhost:3001/mcp');
+
+    await expect(client.callTool('search', { query: 'case' })).resolves.toBe('canonical output');
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls[1][1]!.headers).toEqual(
+      expect.objectContaining({
+        'mcp-session-id': 'canonical-session',
+      }),
+    );
+    expect(fetchMock.mock.calls[2][1]!.headers).toEqual(
+      expect.objectContaining({
+        'mcp-session-id': 'canonical-session',
+      }),
+    );
+  });
+
   it('self-connects for callTool on a fresh HTTP client', async () => {
     const fetchMock = jest
       .fn<typeof fetch>()
