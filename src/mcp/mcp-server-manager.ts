@@ -132,11 +132,20 @@ export class McpServerManager implements OnModuleInit, OnModuleDestroy {
   private createHttpClient(config: McpServerConfig, serverName: string): IMcpClient {
     switch (config.profile) {
       case 'standard':
+        return this.createStandardHttpClient(config, serverName);
       case 'open-websearch':
-        return new McpClientImpl(config.url!);
+        return this.createOpenWebSearchHttpClient(config, serverName);
       default:
         throw new Error(`Unsupported MCP server profile "${String(config.profile)}" for HTTP server ${serverName}`);
     }
+  }
+
+  private createStandardHttpClient(config: McpServerConfig, _serverName: string): IMcpClient {
+    return new McpClientImpl(config.url!);
+  }
+
+  private createOpenWebSearchHttpClient(config: McpServerConfig, _serverName: string): IMcpClient {
+    return new McpClientImpl(config.url!);
   }
 
   private async createStdioClient(
@@ -145,12 +154,16 @@ export class McpServerManager implements OnModuleInit, OnModuleDestroy {
   ): Promise<{ client: IMcpClient; containerId: string }> {
     switch (config.profile) {
       case 'standard':
-      case 'open-websearch':
-        break;
+        return this.createStandardStdioClient(config, serverName);
       default:
         throw new Error(`Unsupported MCP server profile "${String(config.profile)}" for stdio server ${serverName}`);
     }
+  }
 
+  private async createStandardStdioClient(
+    config: McpServerConfig,
+    _serverName: string,
+  ): Promise<{ client: IMcpClient; containerId: string }> {
     const container = await this.docker.createContainer({
       Image: config.image,
       Env: this.resolveEnvVars(config.env || {}),
