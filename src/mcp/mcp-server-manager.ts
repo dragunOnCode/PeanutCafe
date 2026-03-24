@@ -119,41 +119,70 @@ export class McpServerManager implements OnModuleInit, OnModuleDestroy {
     serverName: string,
   ): Promise<{ client: IMcpClient; containerId?: string }> {
     if (config.url) {
-      return { client: new McpClientImpl(config.url) };
+      return { client: this.createHttpClient(config, serverName) };
     }
 
     if (config.image) {
-      const container = await this.docker.createContainer({
-        Image: config.image,
-        Env: this.resolveEnvVars(config.env || {}),
-        AttachStdout: true,
-        AttachStderr: true,
-        Tty: false,
-      });
-
-      await container.start();
-
-      const containerInfo = await container.inspect();
-      const containerId = containerInfo.Id;
-
-      const exec = await container.exec({
-        AttachStdout: true,
-        AttachStdin: true,
-        Cmd: ['npx', '-y', '@brave/brave-search-mcp-server', '--transport', 'stdio'],
-      });
-
-      const stream = await exec.start({ hijack: true, stdin: true });
-
-      return {
-        client: new McpClientImpl(
-          { stdout: stream as unknown as NodeJS.ReadableStream, stdin: stream as unknown as NodeJS.WritableStream },
-          containerId,
-        ),
-        containerId,
-      };
+      return this.createStdioClient(config, serverName);
     }
 
     throw new Error(`MCP server config must have either url or image: ${serverName}`);
+  }
+
+  private createHttpClient(config: McpServerConfig, serverName: string): IMcpClient {
+    switch (config.profile) {
+      case 'standard':
+      case 'open-websearch':
+        return new McpClientImpl(config.url!);
+      default:
+        throw new Error(`Unsupported MCP server profile "${String(config.profile)}" for HTTP server ${serverName}`);
+    }
+  }
+
+  private async createStdioClient(
+    config: McpServerConfig,
+    serverName: string,
+  ): Promise<{ client: IMcpClient; containerId: string }> {
+    switch (config.profile) {
+      case 'standard':
+      case 'open-websearch':
+        break;
+      default:
+        throw new Error(`Unsupported MCP server profile "${String(config.profile)}" for stdio server ${serverName}`);
+    }
+
+    const container = await this.docker.createContainer({
+      Image: config.image,
+      Env: this.resolveEnvVars(config.env || {}),
+      AttachStdout: true,
+      AttachStderr: true,
+      Tty: false,
+    });
+
+    await container.start();
+
+    const containerInfo = await container.inspect();
+    const containerId = containerInfo.Id;
+
+    const exec = await container.exec({
+      AttachStdout: true,
+      AttachStdin: true,
+      Cmd: this.getStdioServerCommand(),
+    });
+
+    const stream = await exec.start({ hijack: true, stdin: true });
+
+    return {
+      client: new McpClientImpl(
+        { stdout: stream as unknown as NodeJS.ReadableStream, stdin: stream as unknown as NodeJS.WritableStream },
+        containerId,
+      ),
+      containerId,
+    };
+  }
+
+  private getStdioServerCommand(): string[] {
+    return ['npx', '-y', '@brave/brave-search-mcp-server', '--transport', 'stdio'];
   }
 
   private resolveEnvVars(env: Record<string, string>): string[] {
