@@ -22,6 +22,7 @@ export class McpClientImpl {
   private connectPromise: Promise<void> | null = null;
   private connectAttempt = 0;
   private connectAbortController: AbortController | null = null;
+  private activeHttpAbortControllers = new Set<AbortController>();
   private readonly baseUrl: string | null = null;
   private readonly containerExec: ContainerExec | null = null;
   private readonly containerId: string | null = null;
@@ -109,6 +110,8 @@ export class McpClientImpl {
     this.connectAbortController = null;
     this.connectPromise = null;
     connectAbortController?.abort();
+    this.activeHttpAbortControllers.forEach((abortController) => abortController.abort());
+    this.activeHttpAbortControllers.clear();
     this.pendingRequests.forEach(({ reject }) => reject(new Error('Disconnected')));
     this.pendingRequests.clear();
   }
@@ -213,19 +216,28 @@ export class McpClientImpl {
       headers['mcp-session-id'] = this.sessionId;
     }
 
+    const abortController = signal ? null : new AbortController();
+    if (abortController) {
+      this.activeHttpAbortControllers.add(abortController);
+    }
+
     let response: Response;
     try {
       response = await fetch(this.baseUrl, {
         method: 'POST',
         headers,
         body: JSON.stringify(body),
-        signal,
+        signal: signal ?? abortController?.signal,
       });
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') {
         throw new Error(CONNECT_ABORTED_MESSAGE);
       }
       throw new Error(`HTTP request failed: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      if (abortController) {
+        this.activeHttpAbortControllers.delete(abortController);
+      }
     }
 
     this.persistSessionId(response);
@@ -255,7 +267,12 @@ export class McpClientImpl {
       return this.parseEventStream(rawBody, expectedId);
     }
 
-    return JSON.parse(rawBody) as JsonRpcResponseEnvelope;
+    const message = JSON.parse(rawBody) as JsonRpcResponseEnvelope;
+    if (expectedId !== undefined && message.id !== expectedId) {
+      throw new Error(`MCP response missing expected id ${expectedId}`);
+    }
+
+    return message;
   }
 
   private parseEventStream(body: string, expectedId?: number): JsonRpcResponseEnvelope | undefined {
