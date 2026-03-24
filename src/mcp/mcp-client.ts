@@ -272,14 +272,14 @@ export class McpClientImpl {
       throw new Error(`HTTP request failed: ${error instanceof Error ? error.message : String(error)}`);
     }
 
-    this.persistSessionId(response);
-
     if (!response.ok) {
       if (abortController) {
         this.activeHttpAbortControllers.delete(abortController);
       }
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);
     }
+
+    this.persistSessionId(response);
 
     return { response, abortController };
   }

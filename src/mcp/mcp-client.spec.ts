@@ -844,6 +844,69 @@ describe('McpClientImpl HTTP transport', () => {
     );
   });
 
+  it('does not replace an active session id with one from a failed post-connect operation', async () => {
+    const fetchMock = jest
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { protocolVersion: '2025-03-26' } }), {
+          status: 200,
+          headers: {
+            'content-type': 'application/json',
+            'mcp-session-id': 'live-session',
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(null, {
+          status: 202,
+          headers: {
+            'mcp-session-id': 'live-session',
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response('temporary failure', {
+          status: 500,
+          statusText: 'Internal Server Error',
+          headers: {
+            'content-type': 'text/plain',
+            'mcp-session-id': 'poisoned-session',
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ jsonrpc: '2.0', id: 3, result: { tools: [] } }), {
+          status: 200,
+          headers: {
+            'content-type': 'application/json',
+            'mcp-session-id': 'live-session',
+          },
+        }),
+      );
+    global.fetch = fetchMock;
+
+    const client = new McpClientImpl('http://localhost:3001/mcp');
+
+    await client.connect();
+    await expect(client.listTools()).rejects.toThrow('HTTP 500: Internal Server Error');
+    await expect(client.listTools()).resolves.toEqual([]);
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      4,
+      'http://localhost:3001/mcp',
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          'mcp-session-id': 'live-session',
+        }),
+      }),
+    );
+    expect(fetchMock.mock.calls[3][1]!.headers).toEqual(
+      expect.not.objectContaining({
+        'mcp-session-id': 'poisoned-session',
+      }),
+    );
+  });
+
   it('parses event-stream tool call responses and returns text content', async () => {
     const fetchMock = jest
       .fn<typeof fetch>()
