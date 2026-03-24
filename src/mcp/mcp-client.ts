@@ -62,8 +62,9 @@ export class McpClientImpl {
       if (!this.connectPromise) {
         const attempt = ++this.connectAttempt;
         this.sessionId = null;
-        this.connectAbortController = new AbortController();
-        this.connectPromise = this.initializeHttpSession(this.connectAbortController.signal)
+        const abortController = new AbortController();
+        this.connectAbortController = abortController;
+        const connectPromise = this.initializeHttpSession(abortController.signal)
           .then(() => {
             if (attempt !== this.connectAttempt) {
               this.sessionId = null;
@@ -78,9 +79,14 @@ export class McpClientImpl {
             throw error;
           })
           .finally(() => {
-            this.connectAbortController = null;
-            this.connectPromise = null;
+            if (this.connectAbortController === abortController) {
+              this.connectAbortController = null;
+            }
+            if (this.connectPromise === connectPromise) {
+              this.connectPromise = null;
+            }
           });
+        this.connectPromise = connectPromise;
       }
 
       await this.connectPromise;
@@ -99,7 +105,10 @@ export class McpClientImpl {
     this.connectAttempt++;
     this.connected = false;
     this.sessionId = null;
-    this.connectAbortController?.abort();
+    const connectAbortController = this.connectAbortController;
+    this.connectAbortController = null;
+    this.connectPromise = null;
+    connectAbortController?.abort();
     this.pendingRequests.forEach(({ reject }) => reject(new Error('Disconnected')));
     this.pendingRequests.clear();
   }
