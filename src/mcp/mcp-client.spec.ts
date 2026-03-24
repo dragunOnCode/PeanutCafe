@@ -302,6 +302,59 @@ describe('McpClientImpl HTTP transport', () => {
     expect(client.isConnected()).toBe(false);
   });
 
+  it('starts a fresh handshake for an immediate reconnect after disconnect cancels an in-flight connect', async () => {
+    let rejectFirstInitialize: ((reason?: unknown) => void) | undefined;
+    const firstInitialize = new Promise<Response>((_, reject) => {
+      rejectFirstInitialize = reject;
+    });
+    const fetchMock = jest
+      .fn<typeof fetch>()
+      .mockImplementationOnce(() => firstInitialize)
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ jsonrpc: '2.0', id: 2, result: { protocolVersion: '2025-03-26' } }), {
+          status: 200,
+          headers: {
+            'content-type': 'application/json',
+            'mcp-session-id': 'fresh-retry',
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(null, {
+          status: 202,
+          headers: {
+            'mcp-session-id': 'fresh-retry',
+          },
+        }),
+      );
+    global.fetch = fetchMock;
+
+    const client = new McpClientImpl('http://localhost:3001/mcp');
+
+    const firstConnect = client.connect();
+    await Promise.resolve();
+
+    await client.disconnect();
+
+    const secondConnect = client.connect();
+
+    rejectFirstInitialize!(new DOMException('The operation was aborted.', 'AbortError'));
+
+    await expect(firstConnect).rejects.toThrow('HTTP request failed: The operation was aborted.');
+    await expect(secondConnect).resolves.toBeUndefined();
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(JSON.parse(fetchMock.mock.calls[1][1]!.body as string)).toEqual(
+      expect.objectContaining({
+        method: 'initialize',
+      }),
+    );
+    expect(JSON.parse(fetchMock.mock.calls[2][1]!.body as string)).toEqual({
+      jsonrpc: '2.0',
+      method: 'notifications/initialized',
+    });
+  });
+
   it('clears any session id captured during a failed handshake before the next connect retry', async () => {
     const fetchMock = jest
       .fn<typeof fetch>()
