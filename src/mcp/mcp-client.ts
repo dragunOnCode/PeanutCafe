@@ -328,7 +328,9 @@ export class McpClientImpl {
       return headers.get(name);
     }
 
-    const value = headers[name] ?? headers[name.toLowerCase()] ?? headers[name.toUpperCase()];
+    const normalizedName = name.toLowerCase();
+    const matchedKey = Object.keys(headers).find((key) => key.toLowerCase() === normalizedName);
+    const value = matchedKey ? headers[matchedKey] : undefined;
     return typeof value === 'string' ? value : null;
   }
 
