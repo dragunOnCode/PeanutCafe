@@ -35,10 +35,10 @@ describe('McpServerManager', () => {
     expect(manager.getServerStatus('unknown')).toBe(ServerStatus.STOPPED);
   });
 
-  it('creates a standard client for HTTP servers with configured profile', async () => {
+  it('selects the open-websearch HTTP factory for open-websearch profile', async () => {
     const client = createMockClient();
     mockClientFactory.mockReturnValue(client);
-    const createHttpClientSpy = jest.spyOn(manager as any, 'createHttpClient');
+    const createOpenWebSearchHttpClientSpy = jest.spyOn(manager as any, 'createOpenWebSearchHttpClient');
 
     (manager as any).config = {
       openwebsearch: {
@@ -50,7 +50,7 @@ describe('McpServerManager', () => {
 
     await (manager as any).startServer('openwebsearch');
 
-    expect(createHttpClientSpy).toHaveBeenCalledWith(
+    expect(createOpenWebSearchHttpClientSpy).toHaveBeenCalledWith(
       expect.objectContaining({
         url: 'http://localhost:3001/mcp',
         profile: 'open-websearch',
@@ -62,7 +62,7 @@ describe('McpServerManager', () => {
   it('defaults profile to standard when omitted', async () => {
     const client = createMockClient();
     mockClientFactory.mockReturnValue(client);
-    const createHttpClientSpy = jest.spyOn(manager as any, 'createHttpClient');
+    const createStandardHttpClientSpy = jest.spyOn(manager as any, 'createStandardHttpClient');
 
     (manager as any).config = {
       standardServer: {
@@ -73,13 +73,39 @@ describe('McpServerManager', () => {
 
     await (manager as any).startServer('standardServer');
 
-    expect(createHttpClientSpy).toHaveBeenCalledWith(
+    expect(createStandardHttpClientSpy).toHaveBeenCalledWith(
       expect.objectContaining({
         url: 'http://localhost:3002/mcp',
         profile: 'standard',
       }),
       'standardServer',
     );
+  });
+
+  it('selects the standard stdio factory for standard profile', async () => {
+    const client = createMockClient();
+    const createStandardStdioClientSpy = jest.spyOn(manager as any, 'createStandardStdioClient').mockResolvedValue({
+      client,
+      containerId: 'container-123',
+    });
+
+    (manager as any).config = {
+      standardStdioServer: {
+        image: 'peanut/std-mcp:latest',
+        enabled: true,
+      },
+    };
+
+    await (manager as any).startServer('standardStdioServer');
+
+    expect(createStandardStdioClientSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        image: 'peanut/std-mcp:latest',
+        profile: 'standard',
+      }),
+      'standardStdioServer',
+    );
+    expect(manager.getServerStatus('standardStdioServer')).toBe(ServerStatus.RUNNING);
   });
 
   it('connects the created client and marks server RUNNING', async () => {
@@ -120,6 +146,34 @@ describe('McpServerManager', () => {
 
     await expect((manager as any).startServer('incompatibleServer')).rejects.toThrow(
       'Unsupported MCP server profile "unsupported-profile" for HTTP server incompatibleServer',
+    );
+  });
+
+  it('fails clearly for unsupported stdio profiles', async () => {
+    (manager as any).config = {
+      incompatibleStdioServer: {
+        image: 'peanut/std-mcp:latest',
+        enabled: true,
+        profile: 'unsupported-profile',
+      },
+    };
+
+    await expect((manager as any).startServer('incompatibleStdioServer')).rejects.toThrow(
+      'Unsupported MCP server profile "unsupported-profile" for stdio server incompatibleStdioServer',
+    );
+  });
+
+  it('fails clearly for open-websearch stdio profile', async () => {
+    (manager as any).config = {
+      openWebSearchStdioServer: {
+        image: 'peanut/std-mcp:latest',
+        enabled: true,
+        profile: 'open-websearch',
+      },
+    };
+
+    await expect((manager as any).startServer('openWebSearchStdioServer')).rejects.toThrow(
+      'Unsupported MCP server profile "open-websearch" for stdio server openWebSearchStdioServer',
     );
   });
 });
