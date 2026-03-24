@@ -788,6 +788,8 @@ git commit -m "feat(orchestration): add orchestration service for workflow execu
 **Files:**
 
 - Modify: `src/agents/interfaces/llm-adapter.interface.ts`
+- Modify: `src/agents/adapters/claude.adapter.ts`
+- Modify: `src/agents/adapters/codex.adapter.ts`
 
 - [ ] **Step 1: 修改 AgentResponse 接口**
 
@@ -802,11 +804,37 @@ export interface AgentResponse {
 }
 ```
 
-- [ ] **Step 2: 提交**
+- [ ] **Step 2: 修改 ClaudeAdapter 输出 reasoning**
+
+在 `claude.adapter.ts` 的 `generate` 方法中，提取 reasoning：
+
+```typescript
+async generate(prompt: string, context: AgentContext): Promise<AgentResponse> {
+  // ... existing code ...
+  const response = await this.client.chat.completions.create({...});
+  const content = response.choices[0]?.message?.content ?? '';
+
+  // 提取 <reasoning>...</reasoning> 标签内容
+  const reasoningMatch = content.match(/<reasoning>([\s\S]*?)<\/reasoning>/);
+  const reasoning = reasoningMatch ? reasoningMatch[1] : undefined;
+  const cleanContent = content.replace(/<reasoning>[\s\S]*?<\/reasoning>/g, '').trim();
+
+  return {
+    content: cleanContent,
+    reasoning,
+    tokenUsage: {...},
+    timestamp: new Date(),
+  };
+}
+```
+
+- [ ] **Step 3: 修改 CodexAdapter（同样逻辑）**
+
+- [ ] **Step 4: 提交**
 
 ```bash
-git add src/agents/interfaces/llm-adapter.interface.ts
-git commit -m "feat(agent): add reasoning field to AgentResponse"
+git add src/agents/
+git commit -m "feat(agent): add reasoning field and extract from LLM response"
 ```
 
 ---
@@ -871,6 +899,31 @@ await orchestrationService.executeWorkflow(sessionId, routeResult.processedConte
 
 - [ ] **Step 2: 修改 GatewayModule 导入 OrchestrationModule**
 
+在 `src/gateway/gateway.module.ts` 中添加 OrchestrationModule：
+
+```typescript
+// src/gateway/gateway.module.ts
+import { Module } from '@nestjs/common';
+import { ChatGateway } from './chat.gateway';
+import { OrchestrationModule } from '../orchestration/orchestration.module';
+
+@Module({
+  imports: [OrchestrationModule],
+  providers: [ChatGateway],
+  exports: [ChatGateway],
+})
+export class GatewayModule {}
+```
+
+同时在 `ChatGateway` 构造函数中注入 `OrchestrationService`：
+
+```typescript
+constructor(
+  private readonly orchestrationService: OrchestrationService,
+  // ... existing dependencies
+) {}
+```
+
 - [ ] **Step 3: 运行测试验证**
 
 Run: `npm run test -- src/gateway/chat.gateway.spec.ts`
@@ -895,12 +948,13 @@ Run: `docker-compose -f docker/docker-compose.yml up -d`
 
 Run: `npm run start:dev`
 
-- [ ] **Step 3: 发送测试消息验证工作流**
+- [ ] **Step 3: 通过 WebSocket 发送测试消息**
+
+使用 `socket.io` 客户端或 wscat：
 
 ```bash
-curl -X POST http://localhost:3000/chat/message \
-  -H "Content-Type: application/json" \
-  -d '{"sessionId":"test","content":"@Claude 用 python 实现贪吃蛇"}'
+npx wscat -c ws://localhost:3000/chat?sessionId=test
+> {"event":"message:send","data":{"content":"@Claude 用 python 实现贪吃蛇","sessionId":"test"}}
 ```
 
 - [ ] **Step 4: 检查思维链文件**
@@ -908,7 +962,12 @@ curl -X POST http://localhost:3000/chat/message \
 Run: `cat sessions/test/chain-of-thought.md`
 Expected: 包含 Claude 的 Plan、ReAct Steps
 
-- [ ] **Step 5: 提交测试**
+- [ ] **Step 5: 验证多 Agent 协作**
+
+发送：`@Claude 实现排序算法，完成后交给 @Codex 检视`
+检查思维链文件是否包含两个 Agent 的记录
+
+- [ ] **Step 6: 提交测试**
 
 ```bash
 git add -A
