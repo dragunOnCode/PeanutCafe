@@ -280,6 +280,44 @@ describe('McpClientImpl HTTP transport', () => {
     );
   });
 
+  it('rejects when a plain JSON response does not contain the expected response id', async () => {
+    const fetchMock = jest
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { protocolVersion: '2025-03-26' } }), {
+          status: 200,
+          headers: {
+            'content-type': 'application/json',
+            'mcp-session-id': 'json-wrong-id',
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(null, {
+          status: 202,
+          headers: {
+            'mcp-session-id': 'json-wrong-id',
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ jsonrpc: '2.0', id: 999, result: { tools: [] } }), {
+          status: 200,
+          headers: {
+            'content-type': 'application/json',
+            'mcp-session-id': 'json-wrong-id',
+          },
+        }),
+      );
+    global.fetch = fetchMock;
+
+    const client = new McpClientImpl('http://localhost:3001/mcp');
+
+    await client.connect();
+
+    await expect(client.listTools()).rejects.toThrow('MCP response missing expected id 2');
+  });
+
   it('coalesces concurrent HTTP connect calls into a single initialization sequence', async () => {
     let resolveInitialize: ((response: Response) => void) | undefined;
     const initializeResponse = new Promise<Response>((resolve) => {
@@ -404,6 +442,53 @@ describe('McpClientImpl HTTP transport', () => {
 
     await expect(pendingConnect).rejects.toThrow('HTTP request failed: The operation was aborted.');
     expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(client.isConnected()).toBe(false);
+  });
+
+  it('rejects an in-flight HTTP operation if disconnect happens before the response resolves', async () => {
+    let operationSignal: AbortSignal | undefined;
+    let rejectListTools: ((reason?: unknown) => void) | undefined;
+    const pendingListToolsResponse = new Promise<Response>((_, reject) => {
+      rejectListTools = reject;
+    });
+    const fetchMock = jest
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { protocolVersion: '2025-03-26' } }), {
+          status: 200,
+          headers: {
+            'content-type': 'application/json',
+            'mcp-session-id': 'op-disconnect',
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(null, {
+          status: 202,
+          headers: {
+            'mcp-session-id': 'op-disconnect',
+          },
+        }),
+      )
+      .mockImplementationOnce((_input, init) => {
+        operationSignal = init?.signal as AbortSignal | undefined;
+        return pendingListToolsResponse;
+      });
+    global.fetch = fetchMock;
+
+    const client = new McpClientImpl('http://localhost:3001/mcp');
+
+    await client.connect();
+    const pendingListTools = client.listTools();
+    await Promise.resolve();
+
+    await client.disconnect();
+
+    expect(operationSignal?.aborted).toBe(true);
+
+    rejectListTools!(new DOMException('The operation was aborted.', 'AbortError'));
+
+    await expect(pendingListTools).rejects.toThrow('HTTP request failed: The operation was aborted.');
     expect(client.isConnected()).toBe(false);
   });
 
