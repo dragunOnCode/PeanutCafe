@@ -29,6 +29,7 @@ import { GeminiAdapter } from '../agents/adapters/gemini.adapter';
 import { AgentContext } from '../agents/interfaces/llm-adapter.interface';
 import { SessionDeletionQueue } from '../queue/session-deletion.queue';
 import { SessionDeletionService } from '../session/session-deletion.service';
+import { PromptTemplateService } from '../agents/prompts/prompt-template.service';
 
 @WebSocketGateway({
   namespace: '/chat',
@@ -60,6 +61,7 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     private readonly geminiAdapter: GeminiAdapter,
     private readonly deletionService: SessionDeletionService,
     private readonly deletionQueue: SessionDeletionQueue,
+    private readonly promptTemplateService: PromptTemplateService,
   ) {}
 
   afterInit(): void {
@@ -76,7 +78,7 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     this.logger.log('WebSocket Gateway initialized');
   }
 
-  handleConnection(client: Socket) {
+  async handleConnection(client: Socket) {
     const sessionId = client.handshake.query.sessionId as string;
     const userId = (client.handshake.query.userId as string | undefined) ?? null;
 
@@ -89,6 +91,8 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
 
     void client.join(`session:${sessionId}`);
     this.sessionManager.addClient(sessionId, client);
+
+    await this.promptTemplateService.initializeSessionPrompts(sessionId);
 
     this.logger.log(`客户端连接: ${client.id} (User: ${userId ?? '—'}, Session: ${sessionId})`);
 
