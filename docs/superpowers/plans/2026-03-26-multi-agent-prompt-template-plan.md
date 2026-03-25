@@ -830,7 +830,10 @@ describe('PromptWatcherService', () => {
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
-      providers: [PromptWatcherService, { provide: PromptTemplateService, useValue: { clearSessionCache: jest.fn() } }],
+      providers: [
+        PromptWatcherService,
+        { provide: PromptTemplateService, useValue: { clearSessionCache: jest.fn(), clearAllCache: jest.fn() } },
+      ],
     }).compile();
 
     service = module.get<PromptWatcherService>(PromptWatcherService);
