@@ -9,8 +9,9 @@ import {
   DecisionResult,
 } from '../interfaces/llm-adapter.interface';
 import { Message } from '../../common/types';
-import { buildChatMessages, ChatMessage } from '../utils/build-chat-messages';
+import { ChatMessage } from '../utils/build-chat-messages';
 import { ToolExecutorService } from '../tools/tool-executor.service';
+import { PromptBuilder } from '../prompts/prompt-builder';
 type StreamChunk = {
   choices?: Array<{
     delta?: {
@@ -37,6 +38,7 @@ export class CodexAdapter implements ILLMAdapter {
   constructor(
     private readonly configService: ConfigService,
     private readonly toolExecutorService: ToolExecutorService,
+    private readonly promptBuilder: PromptBuilder,
   ) {
     this.client = new OpenAI({
       apiKey: this.configService.getOrThrow<string>('GLM_API_KEY'),
@@ -48,7 +50,7 @@ export class CodexAdapter implements ILLMAdapter {
     this.status = AgentStatus.BUSY;
 
     try {
-      const messages = this.buildMessages(context);
+      const messages = await this.buildMessages(context);
       this.logger.log(`Codex messages history: ${JSON.stringify(messages)}`);
 
       const response = await this.client.chat.completions.create({
@@ -79,7 +81,7 @@ export class CodexAdapter implements ILLMAdapter {
     this.toolExecutorService.registerSessionTools(context.sessionId);
 
     try {
-      const currentMessages = [...this.buildMessages(context)];
+      const currentMessages = [...(await this.buildMessages(context))];
       let fullResponse = '';
 
       while (true) {
@@ -144,19 +146,17 @@ export class CodexAdapter implements ILLMAdapter {
     return this.status;
   }
 
-  private buildMessages(context: AgentContext): ChatMessage[] {
-    const systemPrompt = `你是 Codex，一个专业的代码审查专家。
-你的职责是：
-1. 审查代码质量
-2. 发现潜在问题
-3. 提供优化建议
-4. 确保代码安全
-
-当需要读取文件时，使用 <tool_call>{"name": "read_file", "args": {"path": "文件路径"}}</tool_call>
-当需要写入文件时，使用 <tool_call>{"name": "write_file", "args": {"path": "文件路径", "content": "文件内容"}}</tool_call>
-当需要列出文件时，使用 <tool_call>{"name": "list_files", "args": {}}</tool_call>
-当需要执行命令时，使用 <tool_call>{"name": "execute_command", "args": {"command": "命令", "args": ["参数"]}}</tool_call>`;
-
-    return buildChatMessages(systemPrompt, context.conversationHistory);
+  private async buildMessages(context: AgentContext): Promise<ChatMessage[]> {
+    return this.promptBuilder.buildMessages(
+      {
+        id: this.id,
+        name: this.name,
+        type: this.type,
+        model: this.model,
+        role: this.role,
+        capabilities: this.capabilities,
+      },
+      context as any,
+    );
   }
 }

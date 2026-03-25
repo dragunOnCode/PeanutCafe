@@ -4,6 +4,8 @@ import OpenAI from 'openai';
 import { ClaudeAdapter } from './claude.adapter';
 import { AgentContext, AgentStatus } from '../interfaces/llm-adapter.interface';
 import { ToolExecutorService } from '../tools/tool-executor.service';
+import { PromptBuilder } from '../prompts/prompt-builder';
+import { ChatMessage } from '../utils/build-chat-messages';
 
 jest.mock('openai', () => ({
   __esModule: true,
@@ -26,6 +28,13 @@ describe('ClaudeAdapter', () => {
     registerSessionTools: jest.fn(),
     parseToolCalls: jest.fn().mockReturnValue([]),
     executeAllToolCalls: jest.fn().mockResolvedValue([]),
+  };
+
+  const mockPromptBuilder = {
+    buildMessages: jest.fn().mockResolvedValue([
+      { role: 'system', content: 'mocked system prompt' },
+      { role: 'user', content: 'test prompt' },
+    ] as ChatMessage[]),
   };
 
   const MockedOpenAI = OpenAI as unknown as jest.Mock;
@@ -113,6 +122,10 @@ describe('ClaudeAdapter', () => {
         {
           provide: ToolExecutorService,
           useValue: mockToolExecutorService,
+        },
+        {
+          provide: PromptBuilder,
+          useValue: mockPromptBuilder,
         },
       ],
     }).compile();
