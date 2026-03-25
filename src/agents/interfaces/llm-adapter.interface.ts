@@ -26,6 +26,7 @@ export interface AgentContext {
 
 export interface AgentResponse {
   content: string;
+  reasoning?: string;
   tokenUsage?: TokenUsage;
   metadata?: Record<string, unknown>;
   timestamp: Date;
