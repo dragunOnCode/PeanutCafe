@@ -386,7 +386,7 @@ export class PromptTemplateService {
     sections.push(this.interpolate(capabilities, vars));
 
     if (constraints) {
-      sections.push(this.interpolate(constraints, vars));
+      sections.push('## 约束规则\n' + this.interpolate(constraints, vars));
     }
 
     if (tools) {
@@ -394,7 +394,7 @@ export class PromptTemplateService {
     }
 
     if (examples) {
-      sections.push(this.interpolate(examples, vars));
+      sections.push('## 示例\n' + this.interpolate(examples, vars));
     }
 
     return sections.join('\n\n');
@@ -555,7 +555,6 @@ git commit -m "feat(prompts): add PromptTemplateService with caching"
 // src/agents/prompts/prompt-builder.ts
 import { Injectable } from '@nestjs/common';
 import { PromptTemplateService } from './prompt-template.service';
-import { AgentConfig } from '../interfaces/agent-config.interface';
 import { Message } from '../../common/types';
 import { ChatMessage } from '../utils/build-chat-messages';
 
@@ -565,11 +564,20 @@ interface AgentContext {
   sharedMemory?: Record<string, unknown>;
 }
 
+interface PromptAgentConfig {
+  id: string;
+  name: string;
+  type: string;
+  role: string;
+  capabilities: string[];
+  model: string;
+}
+
 @Injectable()
 export class PromptBuilder {
   constructor(private readonly templateService: PromptTemplateService) {}
 
-  async buildSystemPrompt(agent: AgentConfig, context: AgentContext): Promise<string> {
+  async buildSystemPrompt(agent: PromptAgentConfig, context: AgentContext): Promise<string> {
     const vars = {
       name: agent.name,
       role: agent.role,
@@ -581,7 +589,7 @@ export class PromptBuilder {
     return this.templateService.buildPrompt(context.sessionId, agent.type, vars);
   }
 
-  async buildMessages(agent: AgentConfig, context: AgentContext): Promise<ChatMessage[]> {
+  async buildMessages(agent: PromptAgentConfig, context: AgentContext): Promise<ChatMessage[]> {
     const systemPrompt = await this.buildSystemPrompt(agent, context);
 
     const messages: ChatMessage[] = [{ role: 'system', content: systemPrompt }];
@@ -608,7 +616,15 @@ export class PromptBuilder {
 import { Test, TestingModule } from '@nestjs/testing';
 import { PromptBuilder } from './prompt-builder';
 import { PromptTemplateService } from './prompt-template.service';
-import { AgentConfig } from '../interfaces/agent-config.interface';
+
+interface MockAgentConfig {
+  id: string;
+  name: string;
+  type: string;
+  role: string;
+  capabilities: string[];
+  model: string;
+}
 
 describe('PromptBuilder', () => {
   let builder: PromptBuilder;
@@ -628,7 +644,7 @@ describe('PromptBuilder', () => {
 
   describe('buildSystemPrompt', () => {
     it('should build system prompt for agent', async () => {
-      const agent: AgentConfig = {
+      const agent: MockAgentConfig = {
         id: 'claude-001',
         name: 'Claude',
         type: 'claude',
@@ -655,7 +671,7 @@ describe('PromptBuilder', () => {
 
   describe('buildMessages', () => {
     it('should build messages array with system prompt', async () => {
-      const agent: AgentConfig = {
+      const agent: MockAgentConfig = {
         id: 'claude-001',
         name: 'Claude',
         type: 'claude',
@@ -676,7 +692,7 @@ describe('PromptBuilder', () => {
     });
 
     it('should include conversation history', async () => {
-      const agent: AgentConfig = {
+      const agent: MockAgentConfig = {
         id: 'claude-001',
         name: 'Claude',
         type: 'claude',
@@ -745,17 +761,21 @@ export const promptConfig = {
 
 ```typescript
 // src/agents/prompts/prompt-watcher.service.ts
-import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import * as chokidar from 'chokidar';
 import * as path from 'path';
 import { PromptTemplateService } from './prompt-template.service';
 
 @Injectable()
-export class PromptWatcherService implements OnModuleDestroy {
+export class PromptWatcherService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(PromptWatcherService.name);
   private watcher: chokidar.FSWatcher | undefined;
 
   constructor(private readonly templateService: PromptTemplateService) {}
+
+  onModuleInit(): void {
+    this.startWatching();
+  }
 
   onModuleDestroy(): void {
     this.closeWatcher();
@@ -776,6 +796,8 @@ export class PromptWatcherService implements OnModuleDestroy {
 
     this.watcher.on('change', (filePath) => {
       this.logger.log(`Prompt file changed: ${filePath}`);
+      // 清除所有会话的缓存，下次读取会重新加载
+      this.templateService.clearAllCache();
     });
 
     this.watcher.on('add', (filePath) => {
