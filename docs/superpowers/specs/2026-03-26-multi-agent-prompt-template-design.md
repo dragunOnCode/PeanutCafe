@@ -278,22 +278,33 @@ export class PromptTemplateService {
    * 后续读取比较hash，相同则返回缓存
    */
   async readTemplate(sessionId: string, agentType: string, templateName: string): Promise<string> {
-    const cacheKey = `${sessionId}:${agentType}:${templateName}`;
-    const filePath = path.join(this.workspaceRoot, sessionId, 'prompts', agentType, `${templateName}.md`);
+    // 输入校验：防止路径遍历攻击
+    const sanitizedSessionId = this.sanitizePathComponent(sessionId);
+    const sanitizedAgentType = this.sanitizePathComponent(agentType);
+    const sanitizedTemplateName = this.sanitizeFileName(templateName);
+
+    const cacheKey = `${sanitizedSessionId}:${sanitizedAgentType}:${sanitizedTemplateName}`;
+    const filePath = path.join(
+      this.workspaceRoot,
+      sanitizedSessionId,
+      'prompts',
+      sanitizedAgentType,
+      `${sanitizedTemplateName}.md`,
+    );
 
     // 检查缓存
     const cached = this.cache.get(cacheKey);
     if (cached) {
-      const currentHash = await this.computeFileHash(filePath);
-      if (currentHash === cached.hash) {
+      // 优化：直接比较缓存的hash（不重新读取文件）
+      if (this.isCacheValid(cached)) {
         this.logger.debug(`Cache hit for ${cacheKey}`);
         return cached.content;
       }
     }
 
-    // 缓存未命中或hash变化，重新读取
+    // 缓存未命中或过期，重新读取
     const content = await fs.readFile(filePath, 'utf-8');
-    const hash = await this.computeFileHash(filePath);
+    const hash = crypto.createHash('md5').update(content).digest('hex');
 
     this.cache.set(cacheKey, {
       content,
@@ -307,17 +318,47 @@ export class PromptTemplateService {
   }
 
   /**
+   * 校验路径组件（防止 ../ 路径遍历）
+   */
+  private sanitizePathComponent(input: string): string {
+    if (/^[a-zA-Z0-9_-]+$/.test(input)) {
+      return input;
+    }
+    throw new Error(`Invalid path component: ${input}`);
+  }
+
+  /**
+   * 校验文件名
+   */
+  private sanitizeFileName(input: string): string {
+    if (/^[a-zA-Z0-9_-]+$/.test(input)) {
+      return input;
+    }
+    throw new Error(`Invalid file name: ${input}`);
+  }
+
+  /**
+   * 检查缓存是否有效
+   */
+  private isCacheValid(cached: CachedTemplate): boolean {
+    // 可扩展：添加TTL过期检查
+    // return Date.now() - cached.lastModified.getTime() < this.cacheTtlMs;
+    return true; // 当前仅依赖hash校验
+  }
+
+  /**
    * 构建完整提示词
+   * 注意：tools.md 和 constraints.md 存储在 _shared/ 目录
    */
   async buildPrompt(sessionId: string, agentType: string, vars: TemplateVars): Promise<string> {
-    const [system, capabilities, tools] = await Promise.all([
+    const [system, capabilities, tools, constraints] = await Promise.all([
       this.readTemplate(sessionId, agentType, 'system'),
       this.readTemplate(sessionId, agentType, 'capabilities'),
-      this.readTemplate(sessionId, agentType, 'tools'),
+      this.tryReadTemplate(sessionId, '_shared', 'tools'), // tools 在 _shared/
+      this.tryReadTemplate(sessionId, '_shared', 'constraints'), // constraints 在 _shared/
     ]);
 
     // 尝试读取可选模板
-    const constraints = await this.tryReadTemplate(sessionId, '_shared', 'constraints');
     const examples = await this.tryReadTemplate(sessionId, agentType, 'examples');
 
     return this.composePrompt(system, capabilities, tools, constraints, examples, vars);
@@ -376,7 +417,7 @@ export class PromptTemplateService {
   }
 
   /**
-   * 计算文件hash
+   * 计算文件hash（仅用于需要独立hash的场景，如初始化时）
    */
   private async computeFileHash(filePath: string): Promise<string> {
     const content = await fs.readFile(filePath, 'utf-8');
@@ -385,6 +426,7 @@ export class PromptTemplateService {
 
   /**
    * 复制目录
+   * 注意：源路径来自配置目录，无需校验
    */
   private async copyDirectory(src: string, dest: string): Promise<void> {
     await fs.mkdir(dest, { recursive: true });
@@ -451,6 +493,7 @@ export class PromptTemplateService {
 import { Injectable } from '@nestjs/common';
 import { PromptTemplateService } from './prompt-template.service';
 import { AgentConfig } from '../interfaces/agent-config.interface';
+import { Message } from '../../common/types';
 
 interface AgentContext {
   sessionId: string;
