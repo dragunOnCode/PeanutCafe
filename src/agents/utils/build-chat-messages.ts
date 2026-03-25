@@ -1,6 +1,6 @@
 import { Message } from '../../common/types';
 
-export type ChatMessage = { role: 'system' | 'user' | 'assistant'; content: string };
+export type ChatMessage = { role: 'system' | 'user' | 'assistant'; agentName?: string; content: string };
 
 /**
  * system + 近期会话历史。用户输入由网关先写入短期记忆，再通过 {AgentContext.conversationHistory} 传入，此处不再拼接 prompt。
@@ -17,6 +17,7 @@ export function buildChatMessages(
     for (const msg of conversationHistory.slice(-maxRecent)) {
       messages.push({
         role: msg.role === 'user' ? 'user' : 'assistant',
+        agentName: msg.role === 'assistant' ? msg.agentName : undefined,
         content: msg.content,
       });
     }

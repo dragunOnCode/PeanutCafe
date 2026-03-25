@@ -1,16 +1,24 @@
 import { ToolExecutorService, ToolCall } from './tool-executor.service';
 import { ToolRegistry } from './tool-registry';
 import { CommandExecutor } from './command-executor';
+import { promises as fs } from 'fs';
+import { join } from 'path';
 
 describe('ToolExecutorService', () => {
   let service: ToolExecutorService;
   let toolRegistry: ToolRegistry;
   let commandExecutor: CommandExecutor;
+  const sessionId = 'test-session';
+  const sessionDir = join(process.cwd(), 'workspace', 'sessions', sessionId);
 
   beforeEach(() => {
     toolRegistry = new ToolRegistry();
     commandExecutor = new CommandExecutor();
     service = new ToolExecutorService(toolRegistry, commandExecutor);
+  });
+
+  afterEach(async () => {
+    await fs.rm(sessionDir, { recursive: true, force: true });
   });
 
   describe('parseToolCalls', () => {
@@ -64,6 +72,67 @@ describe('ToolExecutorService', () => {
       const result = await service.executeToolCall(toolCall);
       expect(result.success).toBe(true);
       expect(result.result).toBe('Echo: hello');
+    });
+  });
+
+  describe('edit_file tool', () => {
+    beforeEach(() => {
+      service.registerSessionTools(sessionId);
+    });
+
+    it('should replace a uniquely matched string in the target file', async () => {
+      await fs.mkdir(sessionDir, { recursive: true });
+      await fs.writeFile(join(sessionDir, 'notes.txt'), 'alpha\nbeta\nalpha beta\n', 'utf-8');
+
+      const result = await service.executeToolCall({
+        id: 'edit-1',
+        name: 'edit_file',
+        args: {
+          path: 'notes.txt',
+          oldContent: '\nbeta\n',
+          newContent: '\ngamma\n',
+        },
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.result).toBe('File edited: notes.txt');
+      await expect(fs.readFile(join(sessionDir, 'notes.txt'), 'utf-8')).resolves.toBe('alpha\ngamma\nalpha beta\n');
+    });
+
+    it('should fail when the original content is not found', async () => {
+      await fs.mkdir(sessionDir, { recursive: true });
+      await fs.writeFile(join(sessionDir, 'notes.txt'), 'alpha\nbeta\n', 'utf-8');
+
+      const result = await service.executeToolCall({
+        id: 'edit-2',
+        name: 'edit_file',
+        args: {
+          path: 'notes.txt',
+          oldContent: 'missing',
+          newContent: 'gamma',
+        },
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toBe('Error: Original content not found in file: notes.txt');
+    });
+
+    it('should fail when the original content matches multiple locations', async () => {
+      await fs.mkdir(sessionDir, { recursive: true });
+      await fs.writeFile(join(sessionDir, 'notes.txt'), 'repeat\nrepeat\n', 'utf-8');
+
+      const result = await service.executeToolCall({
+        id: 'edit-3',
+        name: 'edit_file',
+        args: {
+          path: 'notes.txt',
+          oldContent: 'repeat',
+          newContent: 'once',
+        },
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toBe('Error: Original content matched multiple locations in file: notes.txt');
     });
   });
 });

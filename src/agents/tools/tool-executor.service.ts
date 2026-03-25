@@ -100,6 +100,7 @@ export class ToolExecutorService {
   registerSessionTools(sessionId: string): void {
     this.toolRegistry.registerTool(this.createReadFileTool(sessionId));
     this.toolRegistry.registerTool(this.createWriteFileTool(sessionId));
+    this.toolRegistry.registerTool(this.createEditFileTool(sessionId));
     this.toolRegistry.registerTool(this.createListFilesTool(sessionId));
     this.toolRegistry.registerTool(this.createExecuteCommandTool(sessionId));
   }
@@ -147,6 +148,55 @@ export class ToolExecutorService {
         await fs.mkdir(dir, { recursive: true });
         await fs.writeFile(fullPath, content, 'utf-8');
         return `File written: ${path}`;
+      },
+    };
+  }
+
+  private createEditFileTool(sessionId: string): Tool {
+    return {
+      name: 'edit_file',
+      description: '在指定文件中将唯一匹配的一段原内容替换为新内容。',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: '文件路径' },
+          oldContent: { type: 'string', description: '原内容，必须在目标文件中唯一匹配一次' },
+          newContent: { type: 'string', description: '替换后的新内容' },
+        },
+        required: ['path', 'oldContent', 'newContent'],
+      },
+      execute: async ({
+        path,
+        oldContent,
+        newContent,
+      }: {
+        path: string;
+        oldContent: string;
+        newContent: string;
+      }) => {
+        const fullPath = join(this.sessionWorkspaceDir, sessionId, path);
+
+        let content: string;
+        try {
+          content = await fs.readFile(fullPath, 'utf-8');
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+            throw new Error(`Error: File not found: ${path}`);
+          }
+          throw error;
+        }
+
+        const matches = content.split(oldContent).length - 1;
+        if (matches === 0) {
+          throw new Error(`Error: Original content not found in file: ${path}`);
+        }
+        if (matches > 1) {
+          throw new Error(`Error: Original content matched multiple locations in file: ${path}`);
+        }
+
+        const updatedContent = content.replace(oldContent, newContent);
+        await fs.writeFile(fullPath, updatedContent, 'utf-8');
+        return `File edited: ${path}`;
       },
     };
   }

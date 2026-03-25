@@ -102,11 +102,15 @@ export class GeminiAdapter implements ILLMAdapter {
           }
         }
 
+        this.logger.log(`Gemini response buffer: ${buffer}`);
+
         const toolCalls = this.toolExecutorService.parseToolCalls(buffer);
 
         if (toolCalls.length === 0) {
           break;
         }
+
+        this.logger.log(`Gemini tool calls: ${JSON.stringify(toolCalls)}`);
 
         currentMessages.push({
           role: 'assistant',
@@ -114,6 +118,7 @@ export class GeminiAdapter implements ILLMAdapter {
         });
 
         const toolResults = await this.toolExecutorService.executeAllToolCalls(toolCalls);
+        this.logger.log(`Gemini tool results: ${JSON.stringify(toolResults)}`);
 
         for (const result of toolResults) {
           currentMessages.push({
