@@ -339,11 +339,12 @@ export class PromptTemplateService {
 
   /**
    * 检查缓存是否有效
+   * 当前策略：缓存一直有效，直到被 PromptWatcherService 显式清除
+   * 这样可以避免每次读取都计算文件hash，提升性能
    */
   private isCacheValid(cached: CachedTemplate): boolean {
-    // 可扩展：添加TTL过期检查
-    // return Date.now() - cached.lastModified.getTime() < this.cacheTtlMs;
-    return true; // 当前仅依赖hash校验
+    // 缓存有效性依赖外部触发：PromptWatcherService 监听文件变化并调用 clearSessionCache()
+    return true;
   }
 
   /**
@@ -494,6 +495,7 @@ import { Injectable } from '@nestjs/common';
 import { PromptTemplateService } from './prompt-template.service';
 import { AgentConfig } from '../interfaces/agent-config.interface';
 import { Message } from '../../common/types';
+import { ChatMessage } from '../utils/build-chat-messages';
 
 interface AgentContext {
   sessionId: string;
