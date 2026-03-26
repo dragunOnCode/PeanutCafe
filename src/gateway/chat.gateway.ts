@@ -30,6 +30,7 @@ import { AgentContext } from '../agents/interfaces/llm-adapter.interface';
 import { SessionDeletionQueue } from '../queue/session-deletion.queue';
 import { SessionDeletionService } from '../session/session-deletion.service';
 import { PromptTemplateService } from '../agents/prompts/prompt-template.service';
+import { OrchestrationService } from '../orchestration/orchestration.service';
 
 @WebSocketGateway({
   namespace: '/chat',
@@ -62,6 +63,7 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     private readonly deletionService: SessionDeletionService,
     private readonly deletionQueue: SessionDeletionQueue,
     private readonly promptTemplateService: PromptTemplateService,
+    private readonly orchestrationService: OrchestrationService,
   ) {}
 
   afterInit(): void {
@@ -173,8 +175,18 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       timestamp: new Date().toISOString(),
     });
 
-    for (const agent of routeResult.targetAgents) {
-      await this.handleAgentResponse(sessionId, agent);
+    // 使用 OrchestrationService 执行多 Agent 工作流
+    for await (const event of this.orchestrationService.streamExecute(
+      sessionId,
+      routeResult.processedContent,
+      parsed.mentionedAgents,
+    )) {
+      // 将工作流事件通过 WebSocket 转发给前端
+      const eventName = `workflow:${event.type}`;
+      this.server.to(`session:${sessionId}`).emit(eventName, {
+        sessionId,
+        ...event,
+      });
     }
 
     return { success: true, messageId: userMessage.id };
