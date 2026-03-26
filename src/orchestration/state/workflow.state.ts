@@ -7,10 +7,12 @@ export interface Message {
   timestamp: string;
 }
 
+export type TaskStatus = 'pending' | 'in_progress' | 'awaiting_review' | 'completed' | 'failed';
+
 export interface Task {
   id: string;
   description: string;
-  status: 'pending' | 'in_progress' | 'completed' | 'failed';
+  status: TaskStatus;
   result?: string;
   reasoning?: string;
 }
@@ -32,4 +34,9 @@ export interface WorkflowState {
   isComplete: boolean;
   chainOfThought: string[];
   metadata: Record<string, unknown>;
+  hasError: boolean;
+  errorMessage?: string;
+  needsReview: boolean;
+  reviewReason?: string;
+  lastOutput?: string;
 }
