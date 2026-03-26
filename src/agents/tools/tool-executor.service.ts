@@ -165,15 +165,7 @@ export class ToolExecutorService {
         },
         required: ['path', 'oldContent', 'newContent'],
       },
-      execute: async ({
-        path,
-        oldContent,
-        newContent,
-      }: {
-        path: string;
-        oldContent: string;
-        newContent: string;
-      }) => {
+      execute: async ({ path, oldContent, newContent }: { path: string; oldContent: string; newContent: string }) => {
         const fullPath = join(this.sessionWorkspaceDir, sessionId, path);
 
         let content: string;

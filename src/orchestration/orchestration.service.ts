@@ -43,11 +43,7 @@ export class OrchestrationService {
     return state;
   }
 
-  private routeMessage(
-    state: WorkflowState,
-    userMessage: string,
-    mentionedAgents: string[],
-  ): WorkflowState {
+  private routeMessage(state: WorkflowState, userMessage: string, mentionedAgents: string[]): WorkflowState {
     const mention = parseMention(userMessage);
     const nextAgent = mention || mentionedAgents[0] || 'Claude';
 

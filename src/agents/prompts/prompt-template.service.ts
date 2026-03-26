@@ -92,6 +92,7 @@ export class PromptTemplateService {
     throw new Error(`Invalid file name: ${input}`);
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   private isCacheValid(cached: CachedTemplate): boolean {
     return true;
   }
@@ -142,12 +143,12 @@ export class PromptTemplateService {
   }
 
   private interpolate(template: string, vars: TemplateVars): string {
-    return template.replace(/\{(\w+)\}/g, (match, key) => {
+    return template.replace(/\{(\w+)\}/g, (match: string, key: string) => {
       if (key === 'capabilitiesList' && vars.capabilities && !vars.capabilitiesList) {
         vars.capabilitiesList = vars.capabilities.map((c) => `- ${c}`).join('\n');
       }
-      if (vars[key] !== undefined) {
-        return String(vars[key]);
+      if (vars[key as keyof TemplateVars] !== undefined) {
+        return String(vars[key as keyof TemplateVars]);
       }
       return match;
     });

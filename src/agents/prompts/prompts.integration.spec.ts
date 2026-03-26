@@ -23,7 +23,9 @@ describe('Prompts Integration', () => {
     const testSessionPath = path.join(process.cwd(), 'workspace', 'sessions', testSessionId);
     try {
       await fs.rm(testSessionPath, { recursive: true, force: true });
-    } catch {}
+    } catch {
+      // Ignore cleanup errors
+    }
   });
 
   afterEach(async () => {
@@ -31,7 +33,9 @@ describe('Prompts Integration', () => {
     const testSessionPath = path.join(process.cwd(), 'workspace', 'sessions', testSessionId);
     try {
       await fs.rm(testSessionPath, { recursive: true, force: true });
-    } catch {}
+    } catch {
+      // Ignore cleanup errors
+    }
   });
 
   describe('initializeSessionPrompts', () => {
