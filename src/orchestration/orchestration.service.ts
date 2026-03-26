@@ -3,8 +3,20 @@ import { AgentRouter } from '../gateway/agent-router';
 import { CotWriterService } from './chain-of-thought/cot-writer.service';
 import { PlannerService } from './agents/planner.service';
 import { ReactorService } from './agents/reactor.service';
-import { parseMention } from './handoff/mention-parser';
 import type { WorkflowState, ReasoningStep } from './state/workflow.state';
+import { compiledGraph, WORKFLOW_NODES } from './graph/workflow.graph';
+
+/**
+ * WorkflowEvent - 工作流事件类型
+ * 用于 WebSocket 转发给前端
+ */
+export type WorkflowEvent =
+  | { type: 'task_start'; agentName: string; task: string }
+  | { type: 'task_complete'; output: string }
+  | { type: 'needs_review'; reason: string }
+  | { type: 'needs_decision'; error?: string }
+  | { type: 'handoff'; from: string; to: string }
+  | { type: 'complete'; finalOutput: string };
 
 @Injectable()
 export class OrchestrationService {
@@ -17,87 +29,115 @@ export class OrchestrationService {
     private readonly reactor: ReactorService,
   ) {}
 
+  /**
+   * 异步流式执行工作流
+   * 产出 WorkflowEvent 供 ChatGateway 通过 WebSocket 转发给前端
+   */
+  async *streamExecute(
+    sessionId: string,
+    userMessage: string,
+    mentionedAgents: string[],
+  ): AsyncGenerator<WorkflowEvent> {
+    this.logger.log(
+      `[OrchestrationService] streamExecute: sessionId=${sessionId}, message=${userMessage.substring(0, 50)}...`,
+    );
+
+    let state = this.createInitialState(sessionId, userMessage, mentionedAgents);
+
+    // 使用 compiledGraph.stream() 异步迭代执行
+    const graphStream = await compiledGraph.stream(state);
+    for await (const step of graphStream) {
+      // 合并步骤状态到当前状态
+      const stepState = Object.values(step)[0] as Partial<WorkflowState>;
+      state = { ...state, ...stepState };
+
+      this.logger.log(`[OrchestrationService] Graph step: node=${Object.keys(step)[0]}`);
+
+      // 将状态转换为事件
+      const event = this.stateToEvent(state);
+      if (event) {
+        this.logger.log(`[OrchestrationService] Emitting event: type=${event.type}`);
+        yield event;
+      }
+    }
+  }
+
+  /**
+   * 同步执行工作流（供 ChatGateway 使用）
+   * 内部调用 streamExecute 并消费所有事件
+   */
   async executeWorkflow(sessionId: string, userMessage: string, mentionedAgents: string[]): Promise<void> {
-    let state: WorkflowState = {
+    this.logger.log(`[OrchestrationService] executeWorkflow started: sessionId=${sessionId}`);
+
+    for await (const _ of this.streamExecute(sessionId, userMessage, mentionedAgents)) {
+      // 消费流中的所有事件，不做特殊处理
+      // 事件会通过 ChatGateway 的 WebSocket 转发给前端
+    }
+
+    this.logger.log(`[OrchestrationService] executeWorkflow completed: sessionId=${sessionId}`);
+  }
+
+  /**
+   * 创建初始工作流状态
+   */
+  private createInitialState(sessionId: string, userMessage: string, mentionedAgents: string[]): WorkflowState {
+    return {
       sessionId,
-      messages: [],
+      messages: [
+        {
+          id: '1',
+          role: 'user',
+          content: userMessage,
+          timestamp: new Date().toISOString(),
+        },
+      ],
       pendingTasks: [],
       completedTasks: [],
       currentAgent: null,
       nextAgent: null,
       isComplete: false,
       chainOfThought: [],
-      metadata: {},
-    };
-
-    state = await this.hydrateSessionState(state);
-    state = await this.routeMessage(state, userMessage, mentionedAgents);
-
-    while (!state.isComplete && state.currentAgent) {
-      state = await this.runTask(state);
-    }
-  }
-
-  private hydrateSessionState(state: WorkflowState): WorkflowState {
-    this.logger.log(`Hydrating session state for ${state.sessionId}`);
-    return state;
-  }
-
-  private routeMessage(state: WorkflowState, userMessage: string, mentionedAgents: string[]): WorkflowState {
-    const mention = parseMention(userMessage);
-    const nextAgent = mention || mentionedAgents[0] || 'Claude';
-
-    this.logger.log(`Routing to agent: ${nextAgent}`);
-
-    return {
-      ...state,
-      nextAgent,
-      currentAgent: nextAgent,
+      hasError: false,
+      needsReview: false,
+      metadata: { mentionedAgents },
     };
   }
 
-  private async runTask(state: WorkflowState): Promise<WorkflowState> {
-    const agent = this.agentRouter.getAgentById(state.currentAgent!);
-
-    if (!agent) {
-      this.logger.warn(`Agent not found: ${state.currentAgent}`);
-      return { ...state, isComplete: true };
+  /**
+   * 将 WorkflowState 转换为 WorkflowEvent
+   * 根据状态变化产生相应事件
+   */
+  private stateToEvent(state: WorkflowState): WorkflowEvent | null {
+    // 任务开始
+    if (state.currentAgent && state.nextAgent === state.currentAgent && !state.lastOutput) {
+      return { type: 'task_start', agentName: state.currentAgent, task: '任务执行中' };
     }
 
-    this.logger.log(`Running task for agent: ${agent.name}`);
-
-    const context = { sessionId: state.sessionId };
-    const tasks = await this.planner.plan(agent.id, state.messages.at(-1)?.content || '', context);
-
-    const steps: ReasoningStep[] = [];
-    for await (const step of this.reactor.execute(tasks[0], context)) {
-      steps.push(step);
+    // 工作流完成
+    if (state.lastOutput && !state.needsReview && !state.hasError && !state.nextAgent) {
+      return { type: 'complete', finalOutput: state.lastOutput };
     }
 
-    let fullOutput = '';
-    for await (const chunk of agent.streamGenerate('', context)) {
-      fullOutput += chunk;
+    // 需要人工审核
+    if (state.needsReview) {
+      return { type: 'needs_review', reason: state.reviewReason || '任务需要人工审核' };
     }
 
-    const handoffMention = parseMention(fullOutput);
+    // 需要决策（错误恢复）
+    if (state.hasError) {
+      return { type: 'needs_decision', error: state.errorMessage };
+    }
 
-    await this.cotWriter.writeAgentThinking(
-      state.sessionId,
-      agent.id,
-      agent.name,
-      tasks.map((t) => t.description).join('\n'),
-      steps,
-      handoffMention ? `@${handoffMention}` : undefined,
-    );
+    // Agent 交接
+    if (state.nextAgent && state.currentAgent && state.nextAgent !== state.currentAgent) {
+      return { type: 'handoff', from: state.currentAgent, to: state.nextAgent };
+    }
 
-    const nextAgent = handoffMention;
+    return null;
+  }
 
-    return {
-      ...state,
-      completedTasks: [...state.completedTasks, ...tasks],
-      nextAgent,
-      currentAgent: nextAgent,
-      isComplete: !nextAgent,
-    };
+  // 供测试使用的 getter
+  getCompiledGraph() {
+    return compiledGraph;
   }
 }
