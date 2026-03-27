@@ -304,12 +304,39 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       systemPrompt,
     });
 
-    // 复用 handleAgentResponse 的完整 LLM 调用流程
+    // 直接调用 adapter 的 streamGenerate，将用户的 prompt 传入
+    // 注意：不能复用 handleAgentResponse，因为它内部传空字符串给 streamGenerate
+    this.server.to(`session:${dto.sessionId}`).emit('agent:thinking', {
+      agentId: agent.id,
+      agentName: agent.name,
+      reason: 'Processing request',
+      timestamp: new Date(),
+    });
+
     try {
-      await this.handleAgentResponse(dto.sessionId, agent);
+      let fullContent = '';
+      // 关键：dto.prompt 是用户输入的调试 prompt，需要传给 LLM
+      for await (const chunk of agent.streamGenerate(dto.prompt, context)) {
+        fullContent += chunk;
+        this.server.to(`session:${dto.sessionId}`).emit('agent:stream', {
+          agentId: agent.id,
+          agentName: agent.name,
+          delta: chunk,
+          timestamp: new Date(),
+        });
+      }
+
+      this.server.to(`session:${dto.sessionId}`).emit('agent:stream:end', {
+        agentId: agent.id,
+        agentName: agent.name,
+        fullContent,
+        timestamp: new Date(),
+      });
+
+      this.logger.log(`[DebugPrompt] LLM response received, length=${fullContent.length}`);
     } catch (error) {
       this.logger.error(`[DebugPrompt] LLM调用失败: ${error instanceof Error ? error.message : String(error)}`);
-      client.emit('agent:error', {
+      this.server.to(`session:${dto.sessionId}`).emit('agent:error', {
         agentId: agent.id,
         agentName: agent.name,
         error: error instanceof Error ? error.message : 'Unknown error',
