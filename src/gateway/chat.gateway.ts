@@ -17,6 +17,7 @@ import { SessionManager } from './session.manager';
 import { MessageRouter } from './message.router';
 import { AgentRouter } from './agent-router';
 import { SendMessageDto } from './dto/send-message.dto';
+import { DebugPromptDto } from './dto/debug-prompt.dto';
 import { ConversationHistoryService } from '../memory/services/conversation-history.service';
 import { TranscriptService, TranscriptEntry } from '../workspace/services/transcript.service';
 import { WorkspaceService } from '../workspace/services/workspace.service';
@@ -30,6 +31,7 @@ import { AgentContext } from '../agents/interfaces/llm-adapter.interface';
 import { SessionDeletionQueue } from '../queue/session-deletion.queue';
 import { SessionDeletionService } from '../session/session-deletion.service';
 import { PromptTemplateService } from '../agents/prompts/prompt-template.service';
+import { PromptBuilder } from '../agents/prompts/prompt-builder';
 import { OrchestrationService } from '../orchestration/orchestration.service';
 
 @WebSocketGateway({
@@ -63,6 +65,7 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     private readonly deletionService: SessionDeletionService,
     private readonly deletionQueue: SessionDeletionQueue,
     private readonly promptTemplateService: PromptTemplateService,
+    private readonly promptBuilder: PromptBuilder,
     private readonly orchestrationService: OrchestrationService,
   ) {}
 
@@ -244,6 +247,74 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       });
 
       return { success: true, queued: true };
+    }
+  }
+
+  /**
+   * 调试接口：验证 system prompt 拼接是否正确
+   * 1. 构建 system prompt 并通过 debug:system-prompt 事件返回给客户端
+   * 2. 复用 handleAgentResponse 调用 LLM 获取响应
+   */
+  @SubscribeMessage('debug:prompt')
+  async handleDebugPrompt(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() dto: DebugPromptDto,
+  ): Promise<void> {
+    this.logger.log(`[DebugPrompt] sessionId=${dto.sessionId}, agentId=${dto.agentId}`);
+
+    // 根据 agentId 获取对应的 adapter
+    const agent = this.agentRouter.getAgentById(dto.agentId);
+    if (!agent) {
+      this.logger.warn(`[DebugPrompt] Unknown agent: ${dto.agentId}`);
+      client.emit('agent:error', {
+        agentId: dto.agentId,
+        agentName: 'unknown',
+        error: `Unknown agent: ${dto.agentId}`,
+        timestamp: new Date(),
+      });
+      return;
+    }
+
+    // 构建 context（调试模式使用空 history）
+    const context: AgentContext = {
+      sessionId: dto.sessionId,
+      conversationHistory: [],
+    };
+
+    // 调用 PromptBuilder 构建完整的 messages（包含 system prompt）
+    // 关键实现：这里调用 buildMessages 是为了获取拼接后的 system prompt 返回给客户端调试
+    // 注意：由于 AgentContext 类型不一致，需要 cast 为 any
+    const messages = await this.promptBuilder.buildMessages(
+      {
+        id: agent.id,
+        name: agent.name,
+        type: agent.type,
+        role: agent.role,
+        capabilities: agent.capabilities,
+        model: agent.model,
+      },
+      context as any,
+    );
+
+    // 提取 system prompt 并通过 debug:system-prompt 事件返回给客户端
+    const systemPrompt = messages[0].content;
+    this.logger.debug(`[DebugPrompt] System prompt built, length=${systemPrompt.length}`);
+    client.emit('debug:system-prompt', {
+      agentId: agent.id,
+      systemPrompt,
+    });
+
+    // 复用 handleAgentResponse 的完整 LLM 调用流程
+    try {
+      await this.handleAgentResponse(dto.sessionId, agent);
+    } catch (error) {
+      this.logger.error(`[DebugPrompt] LLM调用失败: ${error instanceof Error ? error.message : String(error)}`);
+      client.emit('agent:error', {
+        agentId: agent.id,
+        agentName: agent.name,
+        error: error instanceof Error ? error.message : 'Unknown error',
+        timestamp: new Date(),
+      });
     }
   }
 
