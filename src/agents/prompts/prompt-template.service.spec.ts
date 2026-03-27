@@ -8,7 +8,7 @@ describe('PromptTemplateService', () => {
   let service: PromptTemplateService;
   const testRoot = path.join(__dirname, '../../../../test-temp/prompts');
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-return
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-return
   const priv = (s: PromptTemplateService) => s as any;
 
   beforeEach(async () => {
