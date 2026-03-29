@@ -2,8 +2,50 @@ import { Injectable, Logger } from '@nestjs/common';
 import { promises as fs } from 'fs';
 import { join } from 'path';
 import { randomUUID } from 'crypto';
+import { jsonrepair } from 'jsonrepair';
+import type OpenAI from 'openai';
 import { ToolRegistry, Tool } from './tool-registry';
 import { CommandExecutor } from './command-executor';
+
+const TOOL_CALL_LOG_PREVIEW_CHARS = 512;
+
+function truncateForLog(text: string, maxChars = TOOL_CALL_LOG_PREVIEW_CHARS): string {
+  if (text.length <= maxChars) {
+    return text;
+  }
+  return `${text.slice(0, maxChars)}… (${text.length} chars total)`;
+}
+
+/** LLM 有时在 <tool_call> 内再包一层 ```json … ``` */
+function stripMarkdownCodeFence(raw: string): string {
+  let s = raw.trim().replace(/^\uFEFF/, '');
+  if (!s.startsWith('```')) {
+    return s;
+  }
+  s = s.replace(/^```(?:json)?\s*/i, '');
+  const endFence = s.lastIndexOf('```');
+  if (endFence !== -1) {
+    s = s.slice(0, endFence);
+  }
+  return s.trim();
+}
+
+function validateToolCallShape(data: unknown): { name: string; args: Record<string, unknown> } {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    throw new Error('Tool call payload must be a JSON object');
+  }
+  const o = data as Record<string, unknown>;
+  if (typeof o.name !== 'string' || o.name.length === 0) {
+    throw new Error('Tool call must include non-empty string "name"');
+  }
+  if (o.args === undefined) {
+    return { name: o.name, args: {} };
+  }
+  if (o.args === null || typeof o.args !== 'object' || Array.isArray(o.args)) {
+    throw new Error('Tool call "args" must be an object');
+  }
+  return { name: o.name, args: o.args as Record<string, unknown> };
+}
 
 export interface ToolCall {
   id: string;
@@ -32,25 +74,41 @@ export class ToolExecutorService {
   parseToolCalls(output: string): ToolCall[] {
     const toolCalls: ToolCall[] = [];
     const regex = /<tool_call>/g;
-    const startIndex = 0;
     let match;
 
     while ((match = regex.exec(output)) !== null) {
       const openIndex = match.index;
       const closeIndex = output.indexOf('</tool_call>', openIndex);
-      if (closeIndex === -1) break;
-
-      const jsonStr = output.substring(openIndex + '<tool_call>'.length, closeIndex).trim();
-      try {
-        const parsed = JSON.parse(jsonStr);
-        toolCalls.push({
-          id: randomUUID(),
-          name: parsed.name,
-          args: parsed.args ?? {},
-        });
-      } catch (e) {
-        this.logger.warn(`Failed to parse tool call: ${jsonStr}`);
+      if (closeIndex === -1) {
+        break;
       }
+
+      const rawInner = output.substring(openIndex + '<tool_call>'.length, closeIndex).trim();
+      const normalized = stripMarkdownCodeFence(rawInner);
+
+      let shaped: { name: string; args: Record<string, unknown> };
+      let lastError = '';
+
+      try {
+        shaped = validateToolCallShape(JSON.parse(normalized));
+      } catch (e1) {
+        lastError = e1 instanceof Error ? e1.message : String(e1);
+        try {
+          shaped = validateToolCallShape(JSON.parse(jsonrepair(normalized)));
+        } catch (e2) {
+          const repairMsg = e2 instanceof Error ? e2.message : String(e2);
+          this.logger.warn(
+            `Failed to parse tool call (${rawInner.length} chars): ${lastError}; after jsonrepair: ${repairMsg}. Preview: ${truncateForLog(rawInner)}`,
+          );
+          continue;
+        }
+      }
+
+      toolCalls.push({
+        id: randomUUID(),
+        name: shaped.name,
+        args: shaped.args,
+      });
     }
 
     return toolCalls;
@@ -95,6 +153,10 @@ export class ToolExecutorService {
       results.push(result);
     }
     return results;
+  }
+
+  getOpenAITools(): OpenAI.ChatCompletionTool[] {
+    return this.toolRegistry.toOpenAITools();
   }
 
   registerSessionTools(sessionId: string): void {

@@ -50,6 +50,23 @@ describe('ToolExecutorService', () => {
       expect(toolCalls[0].id).toBeDefined();
       expect(toolCalls[0].id).toMatch(/^[0-9a-f-]{36}$/);
     });
+
+    it('should unwrap markdown code fence inside tool_call', () => {
+      const output =
+        '<tool_call>```json\n{"name": "read_file", "args": {"path": "x.txt"}}\n```</tool_call>';
+      const toolCalls = service.parseToolCalls(output);
+      expect(toolCalls).toHaveLength(1);
+      expect(toolCalls[0].name).toBe('read_file');
+      expect(toolCalls[0].args).toEqual({ path: 'x.txt' });
+    });
+
+    it('should recover from trailing comma via jsonrepair', () => {
+      const output = '<tool_call>{"name": "echo", "args": {"msg": "hi",}}</tool_call>';
+      const toolCalls = service.parseToolCalls(output);
+      expect(toolCalls).toHaveLength(1);
+      expect(toolCalls[0].name).toBe('echo');
+      expect(toolCalls[0].args).toEqual({ msg: 'hi' });
+    });
   });
 
   describe('executeToolCall', () => {

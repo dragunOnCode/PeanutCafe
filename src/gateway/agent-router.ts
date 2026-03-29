@@ -57,6 +57,10 @@ export class AgentRouter {
     return this.agents.get(id);
   }
 
+  getAgentByName(name: string): ILLMAdapter | undefined {
+    return this.nameToAgent.get(name.toLowerCase());
+  }
+
   getAllAgents(): ILLMAdapter[] {
     return Array.from(this.agents.values());
   }

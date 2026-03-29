@@ -9,16 +9,10 @@ import {
   DecisionResult,
 } from '../interfaces/llm-adapter.interface';
 import { Message } from '../../common/types';
-import { ChatMessage } from '../utils/build-chat-messages';
 import { ToolExecutorService } from '../tools/tool-executor.service';
 import { PromptBuilder } from '../prompts/prompt-builder';
-type StreamChunk = {
-  choices?: Array<{
-    delta?: {
-      content?: string | null;
-    } | null;
-  }>;
-};
+
+type NativeMessage = OpenAI.ChatCompletionMessageParam;
 
 @Injectable()
 export class GeminiAdapter implements ILLMAdapter {
@@ -55,7 +49,7 @@ export class GeminiAdapter implements ILLMAdapter {
 
       const response = await this.client.chat.completions.create({
         model: this.model,
-        messages: messages,
+        messages,
         temperature: 0.8,
         max_tokens: 4000,
       });
@@ -79,57 +73,81 @@ export class GeminiAdapter implements ILLMAdapter {
     this.status = AgentStatus.BUSY;
 
     this.toolExecutorService.registerSessionTools(context.sessionId);
+    const tools = this.toolExecutorService.getOpenAITools();
 
     try {
-      const currentMessages = [...(await this.buildMessages(context))];
-      let fullResponse = '';
+      const currentMessages: NativeMessage[] = [...(await this.buildMessages(context))];
+      this.logger.log(`Gemini streamGenerate input messages: ${JSON.stringify(currentMessages)}`);
 
       while (true) {
         const stream = await this.client.chat.completions.create({
           model: this.model,
           messages: currentMessages,
+          tools: tools.length > 0 ? tools : undefined,
+          tool_choice: tools.length > 0 ? 'auto' : undefined,
           temperature: 0.8,
           max_tokens: 4000,
           stream: true,
         });
 
-        let buffer = '';
+        let textBuffer = '';
+        const partialToolCalls = new Map<number, { id: string; name: string; args: string }>();
 
-        for await (const chunk of stream as AsyncIterable<StreamChunk>) {
-          const content = chunk.choices?.[0]?.delta?.content ?? '';
-          if (content) {
-            buffer += content;
-            fullResponse += content;
-            yield content;
+        for await (const chunk of stream) {
+          const delta = chunk.choices?.[0]?.delta;
+
+          if (delta?.content) {
+            textBuffer += delta.content;
+            yield delta.content;
+          }
+
+          for (const tcDelta of delta?.tool_calls ?? []) {
+            const existing = partialToolCalls.get(tcDelta.index) ?? { id: '', name: '', args: '' };
+            if (tcDelta.id) existing.id = tcDelta.id;
+            if (tcDelta.function?.name) existing.name += tcDelta.function.name;
+            if (tcDelta.function?.arguments) existing.args += tcDelta.function.arguments;
+            partialToolCalls.set(tcDelta.index, existing);
           }
         }
 
-        this.logger.log(`Gemini response buffer: ${buffer}`);
+        this.logger.log(`Gemini streamGenerate response: ${JSON.stringify(textBuffer)}`);
 
-        const toolCalls = this.toolExecutorService.parseToolCalls(buffer);
-
-        if (toolCalls.length === 0) {
+        if (partialToolCalls.size === 0) {
           break;
         }
 
-        this.logger.log(`Gemini tool calls: ${JSON.stringify(toolCalls)}`);
+        this.logger.log(`Gemini tool calls: ${JSON.stringify([...partialToolCalls.values()])}`);
+
+        const assistantToolCalls = [...partialToolCalls.values()].map((tc) => ({
+          id: tc.id,
+          type: 'function' as const,
+          function: { name: tc.name, arguments: tc.args },
+        }));
 
         currentMessages.push({
           role: 'assistant',
-          content: buffer,
+          content: textBuffer || null,
+          tool_calls: assistantToolCalls,
         });
 
-        const toolResults = await this.toolExecutorService.executeAllToolCalls(toolCalls);
-        this.logger.log(`Gemini tool results: ${JSON.stringify(toolResults)}`);
+        for (const tc of partialToolCalls.values()) {
+          let args: Record<string, unknown>;
+          try {
+            args = JSON.parse(tc.args);
+          } catch {
+            this.logger.error(`Gemini: failed to parse tool args for ${tc.name}: ${tc.args}`);
+            args = {};
+          }
 
-        for (const result of toolResults) {
+          const result = await this.toolExecutorService.executeToolCall({ id: tc.id, name: tc.name, args });
+          this.logger.log(`Gemini tool [${tc.name}]: ${result.success ? 'ok' : result.error}`);
+
           currentMessages.push({
-            role: 'user',
-            content: `[TOOL_RESULT] ${result.toolName}: ${result.success ? result.result : result.error}`,
+            role: 'tool',
+            tool_call_id: tc.id,
+            content: result.success ? result.result : `Error: ${result.error}`,
           });
         }
-
-        buffer = '';
       }
     } catch (error) {
       this.logger.error(`Gemini streamGenerate error: ${error.message}`);
@@ -151,8 +169,8 @@ export class GeminiAdapter implements ILLMAdapter {
     return this.status;
   }
 
-  private async buildMessages(context: AgentContext): Promise<ChatMessage[]> {
-    return this.promptBuilder.buildMessages(
+  private async buildMessages(context: AgentContext): Promise<NativeMessage[]> {
+    const msgs = await this.promptBuilder.buildMessages(
       {
         id: this.id,
         name: this.name,
@@ -163,5 +181,6 @@ export class GeminiAdapter implements ILLMAdapter {
       },
       context as any,
     );
+    return msgs as unknown as NativeMessage[];
   }
 }

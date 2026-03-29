@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import type OpenAI from 'openai';
 
 export interface Tool {
   name: string;
@@ -27,6 +28,17 @@ export class ToolRegistry {
 
   getAllTools(): Tool[] {
     return Array.from(this.tools.values());
+  }
+
+  toOpenAITools(): OpenAI.ChatCompletionTool[] {
+    return Array.from(this.tools.values()).map((tool) => ({
+      type: 'function' as const,
+      function: {
+        name: tool.name,
+        description: tool.description,
+        parameters: tool.parameters as OpenAI.FunctionParameters,
+      },
+    }));
   }
 
   validateParameters(toolName: string, args: unknown): boolean {

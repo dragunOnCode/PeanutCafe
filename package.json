@@ -38,6 +38,7 @@
     "dockerode": "^4.0.10",
     "ioredis": "^5.10.1",
     "ioredis-mock": "^8.13.1",
+    "jsonrepair": "^3.13.3",
     "openai": "^6.32.0",
     "pg": "^8.20.0",
     "reflect-metadata": "^0.2.2",
