@@ -1,10 +1,12 @@
 import { Injectable } from '@nestjs/common';
-import type { ILLMAdapter, AgentContext } from '../../agents/interfaces/llm-adapter.interface';
+import { ClaudeAdapter } from '../../agents/adapters/claude.adapter';
+import type { AgentContext } from '../../agents/interfaces/llm-adapter.interface';
 import type { Task } from '../state/workflow.state';
 
+// 废弃
 @Injectable()
 export class PlannerService {
-  constructor(private readonly llmAdapter: ILLMAdapter) {}
+  constructor(private readonly llmAdapter: ClaudeAdapter) {}
 
   async plan(agentId: string, task: string, context: AgentContext): Promise<Task[]> {
     const prompt = `你是一个任务规划专家。对于以下任务，请分解为可执行的子任务列表：

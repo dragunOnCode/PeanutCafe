@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { AgentsModule } from '../agents/agents.module';
 import { MemoryModule } from '../memory/memory.module';
 import { WorkspaceModule } from '../workspace/workspace.module';
@@ -13,7 +13,14 @@ import { MessageRouter } from './message.router';
 import { AgentRouter } from './agent-router';
 
 @Module({
-  imports: [AgentsModule, MemoryModule, WorkspaceModule, DatabaseModule, QueueModule, OrchestrationModule],
+  imports: [
+    AgentsModule,
+    MemoryModule,
+    WorkspaceModule,
+    DatabaseModule,
+    QueueModule,
+    forwardRef(() => OrchestrationModule),
+  ],
   providers: [
     ChatGateway,
     SessionManager,

@@ -1,10 +1,12 @@
 import { Injectable } from '@nestjs/common';
-import type { ILLMAdapter, AgentContext } from '../../agents/interfaces/llm-adapter.interface';
+import { ClaudeAdapter } from '../../agents/adapters/claude.adapter';
+import type { AgentContext } from '../../agents/interfaces/llm-adapter.interface';
 import type { Task, ReasoningStep } from '../state/workflow.state';
 
+// 废弃
 @Injectable()
 export class ReactorService {
-  constructor(private readonly llmAdapter: ILLMAdapter) {}
+  constructor(private readonly llmAdapter: ClaudeAdapter) {}
 
   async *execute(task: Task, context: AgentContext): AsyncGenerator<ReasoningStep> {
     let stepId = 1;

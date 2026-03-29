@@ -33,6 +33,7 @@ import { SessionDeletionService } from '../session/session-deletion.service';
 import { PromptTemplateService } from '../agents/prompts/prompt-template.service';
 import { PromptBuilder } from '../agents/prompts/prompt-builder';
 import { OrchestrationService } from '../orchestration/orchestration.service';
+import { Message } from '../common/types/message.types';
 
 @WebSocketGateway({
   namespace: '/chat',
@@ -43,6 +44,7 @@ import { OrchestrationService } from '../orchestration/orchestration.service';
 })
 export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect {
   private readonly logger = new Logger(ChatGateway.name);
+  private readonly debugConversationHistory = new Map<string, Message[]>();
 
   @WebSocketServer()
   server: Server;
@@ -251,18 +253,14 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
   }
 
   /**
-   * 调试接口：验证 system prompt 拼接是否正确
+   * 调试接口：验证 system prompt 拼接是否正确，并支持多轮对话
    * 1. 构建 system prompt 并通过 debug:system-prompt 事件返回给客户端
-   * 2. 复用 handleAgentResponse 调用 LLM 获取响应
+   * 2. 维护会话历史，支持多轮对话测试 system prompt 效果
    */
   @SubscribeMessage('debug:prompt')
-  async handleDebugPrompt(
-    @ConnectedSocket() client: Socket,
-    @MessageBody() dto: DebugPromptDto,
-  ): Promise<void> {
+  async handleDebugPrompt(@ConnectedSocket() client: Socket, @MessageBody() dto: DebugPromptDto): Promise<void> {
     this.logger.log(`[DebugPrompt] sessionId=${dto.sessionId}, agentId=${dto.agentId}`);
 
-    // 根据 agentId 获取对应的 adapter
     const agent = this.agentRouter.getAgentById(dto.agentId);
     if (!agent) {
       this.logger.warn(`[DebugPrompt] Unknown agent: ${dto.agentId}`);
@@ -275,15 +273,24 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       return;
     }
 
-    // 构建 context（调试模式使用空 history）
+    await this.ensureSessionRow(dto.sessionId);
+
+    const history = this.debugConversationHistory.get(dto.sessionId) ?? [];
+
+    const userMessage: Message = {
+      id: this.generateMessageId(),
+      sessionId: dto.sessionId,
+      role: 'user',
+      content: dto.prompt,
+      createdAt: new Date(),
+    };
+    history.push(userMessage);
+
     const context: AgentContext = {
       sessionId: dto.sessionId,
-      conversationHistory: [],
+      conversationHistory: history,
     };
 
-    // 调用 PromptBuilder 构建完整的 messages（包含 system prompt）
-    // 关键实现：这里调用 buildMessages 是为了获取拼接后的 system prompt 返回给客户端调试
-    // 注意：由于 AgentContext 类型不一致，需要 cast 为 any
     const messages = await this.promptBuilder.buildMessages(
       {
         id: agent.id,
@@ -296,16 +303,13 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       context as any,
     );
 
-    // 提取 system prompt 并通过 debug:system-prompt 事件返回给客户端
     const systemPrompt = messages[0].content;
-    this.logger.debug(`[DebugPrompt] System prompt built, length=${systemPrompt.length}`);
+    this.logger.debug(`[DebugPrompt] System prompt built, content=${systemPrompt}`);
     client.emit('debug:system-prompt', {
       agentId: agent.id,
       systemPrompt,
     });
 
-    // 直接调用 adapter 的 streamGenerate，将用户的 prompt 传入
-    // 注意：不能复用 handleAgentResponse，因为它内部传空字符串给 streamGenerate
     this.server.to(`session:${dto.sessionId}`).emit('agent:thinking', {
       agentId: agent.id,
       agentName: agent.name,
@@ -315,7 +319,6 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
 
     try {
       let fullContent = '';
-      // 关键：dto.prompt 是用户输入的调试 prompt，需要传给 LLM
       for await (const chunk of agent.streamGenerate(dto.prompt, context)) {
         fullContent += chunk;
         this.server.to(`session:${dto.sessionId}`).emit('agent:stream', {
@@ -332,6 +335,18 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
         fullContent,
         timestamp: new Date(),
       });
+
+      const assistantMessage: Message = {
+        id: this.generateMessageId(),
+        sessionId: dto.sessionId,
+        role: 'assistant',
+        content: fullContent,
+        agentId: agent.id,
+        agentName: agent.name,
+        createdAt: new Date(),
+      };
+      history.push(assistantMessage);
+      this.debugConversationHistory.set(dto.sessionId, history);
 
       this.logger.log(`[DebugPrompt] LLM response received, length=${fullContent.length}`);
     } catch (error) {
