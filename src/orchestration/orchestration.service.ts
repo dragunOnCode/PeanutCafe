@@ -5,7 +5,7 @@ import { PlannerService } from './agents/planner.service';
 import { ReactorService } from './agents/reactor.service';
 import { ConversationHistoryService } from '../memory/services/conversation-history.service';
 import type { WorkflowState, ReasoningStep } from './state/workflow.state';
-import { buildWorkflowGraph, WORKFLOW_NODES } from './graph/workflow.graph';
+import { buildWorkflowGraph, SessionStreamHooks } from './graph/workflow.graph';
 
 /**
  * WorkflowEvent - 工作流事件类型
@@ -14,14 +14,62 @@ import { buildWorkflowGraph, WORKFLOW_NODES } from './graph/workflow.graph';
 export type WorkflowEvent =
   | { type: 'task_start'; agentName: string; task: string }
   | { type: 'task_complete'; output: string }
+  | { type: 'chunk'; agentName: string; delta: string }
+  /** 单次 run_task（单个 Agent 一轮 LLM 输出）结束；交接下一个 Agent 前会先收到本条 */
+  | { type: 'agent_stream_end'; agentName: string; fullContent: string }
   | { type: 'needs_review'; reason: string }
   | { type: 'needs_decision'; error?: string }
   | { type: 'handoff'; from: string; to: string }
-  | { type: 'complete'; finalOutput: string };
+  | { type: 'complete'; finalOutput: string; agentName: string };
+
+/**
+ * 简单的异步队列：支持多生产者（push）和单消费者（AsyncIterator）并发使用。
+ * 生产者在图执行线程里调用 push / end / fail；
+ * 消费者在 streamExecute 的 for-await 里逐个读出事件。
+ */
+class AsyncQueue<T> {
+  private readonly items: T[] = [];
+  private readonly waiters: Array<() => void> = [];
+  private done = false;
+  private err: Error | null = null;
+
+  push(item: T): void {
+    this.items.push(item);
+    this.waiters.shift()?.();
+  }
+
+  end(): void {
+    this.done = true;
+    for (const w of this.waiters) w();
+    this.waiters.length = 0;
+  }
+
+  fail(error: Error): void {
+    this.err = error;
+    this.done = true;
+    for (const w of this.waiters) w();
+    this.waiters.length = 0;
+  }
+
+  async *[Symbol.asyncIterator](): AsyncGenerator<T> {
+    while (true) {
+      while (this.items.length > 0) {
+        yield this.items.shift()!;
+      }
+      if (this.done) {
+        if (this.err) throw this.err;
+        return;
+      }
+      await new Promise<void>((r) => this.waiters.push(r));
+    }
+  }
+}
 
 @Injectable()
 export class OrchestrationService {
   private readonly logger = new Logger(OrchestrationService.name);
+
+  private readonly sessionStreamHooks = new Map<string, SessionStreamHooks>();
   private compiledGraph: ReturnType<typeof buildWorkflowGraph> | null = null;
 
   constructor(
@@ -34,14 +82,19 @@ export class OrchestrationService {
 
   private getGraph(): ReturnType<typeof buildWorkflowGraph> {
     if (!this.compiledGraph) {
-      this.compiledGraph = buildWorkflowGraph(this.agentRouter, this.conversationHistoryService);
+      this.compiledGraph = buildWorkflowGraph(
+        this.agentRouter,
+        this.conversationHistoryService,
+        this.sessionStreamHooks,
+      );
     }
     return this.compiledGraph;
   }
 
   /**
-   * 异步流式执行工作流
-   * 产出 WorkflowEvent 供 ChatGateway 通过 WebSocket 转发给前端
+   * 异步流式执行工作流。
+   * 使用 AsyncQueue 将图内部产生的 chunk 事件与图节点完成事件合并，
+   * 实现真正的实时流式输出。
    */
   async *streamExecute(
     sessionId: string,
@@ -52,21 +105,49 @@ export class OrchestrationService {
       `[OrchestrationService] streamExecute: sessionId=${sessionId}, message=${userMessage.substring(0, 50)}...`,
     );
 
+    const queue = new AsyncQueue<WorkflowEvent>();
+
+    this.sessionStreamHooks.set(sessionId, {
+      onChunk: (agentName, delta) => {
+        queue.push({ type: 'chunk', agentName, delta });
+      },
+      onAgentStreamEnd: (agentName, fullContent) => {
+        queue.push({ type: 'agent_stream_end', agentName, fullContent });
+      },
+    });
+
     let state = this.createInitialState(sessionId, userMessage, mentionedAgents);
-
     const graph = this.getGraph();
-    const graphStream = await graph.stream(state);
-    for await (const step of graphStream) {
-      const stepState = Object.values(step)[0] as Partial<WorkflowState>;
-      state = { ...state, ...stepState };
 
-      this.logger.log(`[OrchestrationService] Graph step: node=${Object.keys(step)[0]}`);
+    // 在后台并发运行图，图节点产生的 chunk 通过 chunkCallbacks 推入队列；
+    // 图节点完成后产生的 WorkflowEvent 也推入同一队列。
+    void (async () => {
+      try {
+        const graphStream = await graph.stream(state);
+        for await (const step of graphStream) {
+          const stepState = Object.values(step)[0] as Partial<WorkflowState>;
+          state = { ...state, ...stepState };
 
-      const event = this.stateToEvent(state);
-      if (event) {
-        this.logger.log(`[OrchestrationService] Emitting event: type=${event.type}`);
-        yield event;
+          this.logger.log(`[OrchestrationService] Graph step: node=${Object.keys(step)[0]}`);
+
+          const event = this.stateToEvent(state);
+          if (event) {
+            this.logger.log(`[OrchestrationService] Emitting event: type=${event.type}`);
+            queue.push(event);
+          }
+        }
+        queue.end();
+      } catch (error) {
+        const err = error instanceof Error ? error : new Error(String(error));
+        this.logger.error(`[OrchestrationService] Graph error: ${err.message}`);
+        queue.fail(err);
+      } finally {
+        this.sessionStreamHooks.delete(sessionId);
       }
+    })();
+
+    for await (const event of queue) {
+      yield event;
     }
   }
 
@@ -119,7 +200,7 @@ export class OrchestrationService {
     }
 
     if (state.lastOutput && !state.needsReview && !state.hasError && !state.nextAgent) {
-      return { type: 'complete', finalOutput: state.lastOutput };
+      return { type: 'complete', finalOutput: state.lastOutput, agentName: state.currentAgent ?? '' };
     }
 
     if (state.needsReview) {

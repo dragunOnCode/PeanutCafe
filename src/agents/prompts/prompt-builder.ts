@@ -43,8 +43,10 @@ export class PromptBuilder {
     if (context.conversationHistory?.length) {
       const recentHistory = context.conversationHistory.slice(-10);
       for (const msg of recentHistory) {
+        const isAssistant = msg.role !== 'user';
         messages.push({
-          role: msg.role === 'user' ? 'user' : 'assistant',
+          role: isAssistant ? 'assistant' : 'user',
+          name: isAssistant ? msg.agentName : undefined,
           content: msg.content,
         });
       }

@@ -20,6 +20,11 @@ interface TemplateVars {
   [key: string]: unknown;
 }
 
+export interface AgentInfo {
+  name: string;
+  role: string;
+}
+
 @Injectable()
 export class PromptTemplateService {
   private readonly logger = new Logger(PromptTemplateService.name);
@@ -32,14 +37,19 @@ export class PromptTemplateService {
     this.workspaceRoot = path.join(process.cwd(), 'workspace', 'sessions');
   }
 
-  async initializeSessionPrompts(sessionId: string): Promise<void> {
+  async initializeSessionPrompts(sessionId: string, sessionAgents?: AgentInfo[]): Promise<void> {
     const sessionPromptsDir = path.join(this.workspaceRoot, sessionId, 'prompts');
     await fs.mkdir(sessionPromptsDir, { recursive: true });
 
     await this.copyDirectory(path.join(this.configRoot, '_shared'), path.join(sessionPromptsDir, '_shared'));
 
-    const agents = ['claude', 'codex', 'gemini'];
-    for (const agent of agents) {
+    if (sessionAgents && sessionAgents.length > 0) {
+      const membersContent = this.generateMembersContent(sessionAgents);
+      await fs.writeFile(path.join(sessionPromptsDir, '_shared', 'members.md'), membersContent, 'utf-8');
+    }
+
+    const agentTypes = ['claude', 'codex', 'gemini'];
+    for (const agent of agentTypes) {
       const agentConfigDir = path.join(this.configRoot, agent);
       if (await this.exists(agentConfigDir)) {
         await this.copyDirectory(agentConfigDir, path.join(sessionPromptsDir, agent));
@@ -47,6 +57,33 @@ export class PromptTemplateService {
     }
 
     this.logger.log(`Initialized prompts for session: ${sessionId}`);
+  }
+
+  private generateMembersContent(agents: AgentInfo[]): string {
+    const rows = agents.map((a) => `| **${a.name}** | ${a.role} |`).join('\n');
+    const names = agents.map((a) => a.name).join('、');
+
+    return `# 会话成员
+
+当前会话中包含以下 Agent，各有专属职责：
+
+| Agent | 职责 |
+|-------|------|
+${rows}
+
+## 任务交接规则
+
+当你判断当前任务**更适合由其他 Agent 处理**时，在回复末尾使用 \`<handoff_agent>\` 标签将任务交接：
+
+\`\`\`
+<handoff_agent>AgentName</handoff_agent>
+\`\`\`
+
+- **AgentName** 必须是上方列表中的名称之一（${names}），大小写一致
+- 交接前请在正文中简要说明原因
+- **不要交接给自己**，交接只能发给其他 Agent
+- 若任务完全在你的能力范围内，**直接完成，不要交接**
+`;
   }
 
   async readTemplate(sessionId: string, agentType: string, templateName: string): Promise<string> {
@@ -98,16 +135,17 @@ export class PromptTemplateService {
   }
 
   async buildPrompt(sessionId: string, agentType: string, vars: TemplateVars): Promise<string> {
-    const [system, capabilities, tools, constraints] = await Promise.all([
+    const [system, capabilities, tools, constraints, members] = await Promise.all([
       this.readTemplate(sessionId, agentType, 'system'),
       this.readTemplate(sessionId, agentType, 'capabilities'),
       this.tryReadTemplate(sessionId, '_shared', 'tools'),
       this.tryReadTemplate(sessionId, '_shared', 'constraints'),
+      this.tryReadTemplate(sessionId, '_shared', 'members'),
     ]);
 
     const examples = await this.tryReadTemplate(sessionId, agentType, 'examples');
 
-    return this.composePrompt(system, capabilities, tools, constraints, examples, vars);
+    return this.composePrompt(system, capabilities, tools, constraints, members, examples, vars);
   }
 
   private composePrompt(
@@ -115,6 +153,7 @@ export class PromptTemplateService {
     capabilities: string,
     tools: string | null,
     constraints: string | null,
+    members: string | null,
     examples: string | null,
     vars: TemplateVars,
   ): string {
@@ -129,6 +168,10 @@ export class PromptTemplateService {
 
     if (constraints) {
       sections.push('## 约束规则\n' + this.interpolate(constraints, vars));
+    }
+
+    if (members) {
+      sections.push(this.interpolate(members, vars));
     }
 
     if (tools) {

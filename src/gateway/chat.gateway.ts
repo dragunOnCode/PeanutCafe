@@ -99,7 +99,8 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     void client.join(`session:${sessionId}`);
     this.sessionManager.addClient(sessionId, client);
 
-    await this.promptTemplateService.initializeSessionPrompts(sessionId);
+    const sessionAgents = this.agentRouter.getAllAgents().map((a) => ({ name: a.name, role: a.role }));
+    await this.promptTemplateService.initializeSessionPrompts(sessionId, sessionAgents);
 
     this.logger.log(`客户端连接: ${client.id} (User: ${userId ?? '—'}, Session: ${sessionId})`);
 
@@ -192,6 +193,35 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
         sessionId,
         ...event,
       });
+
+      // chunk：实时 delta（与 handleAgentResponse 对齐）
+      if (event.type === 'chunk') {
+        const streamAgent = this.agentRouter.getAgentByName(event.agentName);
+        this.server.to(`session:${sessionId}`).emit('agent:stream', {
+          agentId: streamAgent?.id,
+          agentName: event.agentName,
+          delta: event.delta,
+          timestamp: new Date(),
+        });
+      }
+
+      // 每个 Agent 单轮 run_task 结束后一条 end（Claude → Codex 会分别收到）
+      // 同时在此处持久化到 DB 和 transcript，确保 handoff 中间轮次也能落盘
+      if (event.type === 'agent_stream_end') {
+        const endAgent = this.agentRouter.getAgentByName(event.agentName);
+        this.server.to(`session:${sessionId}`).emit('agent:stream:end', {
+          agentId: endAgent?.id,
+          agentName: endAgent?.name ?? event.agentName,
+          fullContent: event.fullContent,
+          timestamp: new Date(),
+        });
+        await this.persistAssistantMessage(sessionId, event.fullContent, event.agentName);
+      }
+
+      // complete 事件：通知前端 workflow 结束（持久化已在 agent_stream_end 完成，无需重复写）
+      if (event.type === 'complete') {
+        // no-op: message already persisted in agent_stream_end
+      }
     }
 
     return { success: true, messageId: userMessage.id };
@@ -484,6 +514,38 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     } catch {
       return String(error);
     }
+  }
+
+  /**
+   * 将 Orchestration 路径产生的 assistant 回复持久化到 PostgreSQL 和 transcript。
+   * conversationHistory 的写入已在 run_task 节点完成，此处只补 DB 存储。
+   */
+  private async persistAssistantMessage(sessionId: string, content: string, agentName: string): Promise<void> {
+    if (!content.trim()) return;
+
+    const agent = this.agentRouter.getAgentByName(agentName);
+
+    await this.ensureSessionRow(sessionId);
+
+    const entity = this.messageRepository.create({
+      sessionId,
+      userId: null,
+      agentId: agent?.id,
+      agentName,
+      role: 'assistant',
+      content,
+    });
+    await this.messageRepository.save(entity);
+
+    await this.transcriptService.appendEntry(sessionId, {
+      role: 'assistant',
+      content,
+      agentId: agent?.id,
+      agentName,
+      timestamp: new Date().toISOString(),
+    });
+
+    this.logger.log(`[ChatGateway] Persisted assistant message: agentName=${agentName}, length=${content.length}`);
   }
 
   /** 调试对话：不依赖 users 表；messages.user_id 存 null。并确保 sessions 存在以满足 session 外键。 */
