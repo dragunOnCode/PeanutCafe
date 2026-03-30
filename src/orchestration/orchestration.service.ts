@@ -86,6 +86,7 @@ export class OrchestrationService {
         this.agentRouter,
         this.conversationHistoryService,
         this.sessionStreamHooks,
+        this.cotWriter,
       );
     }
     return this.compiledGraph;
@@ -184,8 +185,11 @@ export class OrchestrationService {
       nextAgent: null,
       isComplete: false,
       chainOfThought: [],
+      reasoningSteps: [],
+      currentPlan: userMessage,
       hasError: false,
       needsReview: false,
+      useReAct: true,
       metadata: { mentionedAgents },
     };
   }

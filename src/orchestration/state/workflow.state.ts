@@ -19,9 +19,11 @@ export interface Task {
 
 export interface ReasoningStep {
   id: string;
-  thought: string;
-  action: string;
+  thought: string | null;
+  toolCall: { name: string; args: Record<string, unknown> } | null;
   observation: string;
+  isDone: boolean;
+  handoffAgent?: string;
 }
 
 export interface WorkflowState {
@@ -33,10 +35,14 @@ export interface WorkflowState {
   nextAgent: string | null;
   isComplete: boolean;
   chainOfThought: string[];
+  reasoningSteps: ReasoningStep[];
+  currentPlan: string;
   metadata: Record<string, unknown>;
   hasError: boolean;
   errorMessage?: string;
   needsReview: boolean;
   reviewReason?: string;
   lastOutput?: string;
+  useReAct: boolean;
+  reactMaxSteps?: number;
 }

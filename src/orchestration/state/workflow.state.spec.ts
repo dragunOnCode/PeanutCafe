@@ -11,7 +11,12 @@ describe('WorkflowState', () => {
       nextAgent: null,
       isComplete: false,
       chainOfThought: [],
+      reasoningSteps: [],
+      currentPlan: '',
       metadata: {},
+      hasError: false,
+      needsReview: false,
+      useReAct: true,
     };
     expect(state.sessionId).toBe('test-session');
     expect(state.isComplete).toBe(false);
@@ -30,8 +35,9 @@ describe('WorkflowState', () => {
     const step: ReasoningStep = {
       id: '1',
       thought: '思考内容',
-      action: 'execute_command',
+      toolCall: { name: 'execute_command', args: {} },
       observation: '执行结果',
+      isDone: false,
     };
     expect(step.id).toBe('1');
     expect(step.thought).toBe('思考内容');

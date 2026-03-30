@@ -31,7 +31,7 @@ export class CotWriterService {
     const stepsContent = steps
       .map(
         (s) =>
-          `**Step ${s.id}**: Thought - ${s.thought}\n         Action - ${s.action}\n         Observation - ${s.observation}`,
+          `**Step ${s.id}**: Thought - ${s.thought}\n         Action - ${s.toolCall?.name ?? 'none'}\n         Observation - ${s.observation}`,
       )
       .join('\n\n');
 

@@ -1,8 +1,9 @@
 import { Logger } from '@nestjs/common';
 import { StateGraph, END, START, Annotation } from '@langchain/langgraph';
-import type { WorkflowState } from '../state/workflow.state';
+import type { WorkflowState, ReasoningStep } from '../state/workflow.state';
 import type { AgentRouter } from '../../gateway/agent-router';
 import type { ConversationHistoryService } from '../../memory/services/conversation-history.service';
+import { CotWriterService } from '../chain-of-thought/cot-writer.service';
 import { parseAgentOutput, stripSpecialTags } from '../handoff/output-parser';
 import { parseMention } from '../handoff/mention-parser';
 
@@ -29,6 +30,8 @@ const WorkflowAnnotation = Annotation.Root({
   nextAgent: Annotation<string | null>(),
   isComplete: Annotation<boolean>(),
   chainOfThought: Annotation<string[]>(),
+  reasoningSteps: Annotation<ReasoningStep[]>(),
+  currentPlan: Annotation<string>(),
   hasError: Annotation<boolean>(),
   errorMessage: Annotation<string | undefined>(),
   needsReview: Annotation<boolean>(),
@@ -49,7 +52,9 @@ function createRunTaskNode(
   agentRouter: AgentRouter,
   conversationHistoryService: ConversationHistoryService,
   streamHooksBySession: Map<string, SessionStreamHooks>,
+  cotWriter: CotWriterService,
 ) {
+  let stepCounter = 0;
   return async (state: WorkflowNodeState) => {
     logger.log(`[LangGraph] run_task: currentAgent=${state.currentAgent}`);
     if (!state.currentAgent) {
@@ -64,6 +69,7 @@ function createRunTaskNode(
     }
 
     const userMessage = state.messages.at(-1)?.content || '';
+    const plan = state.currentPlan || userMessage;
     const historyContext = await conversationHistoryService.getContext(state.sessionId, agent.id);
     const conversationHistory = historyContext.messages.map((m, idx) => ({
       id: `msg_${idx}`,
@@ -82,17 +88,30 @@ function createRunTaskNode(
     };
 
     const hooks = streamHooksBySession.get(state.sessionId);
+    const reasoningSteps: ReasoningStep[] = [];
 
     try {
       logger.log(`[LangGraph] run_task: calling LLM with message: ${userMessage.substring(0, 50)}...`);
       let fullContent = '';
+
       for await (const chunk of agent.streamGenerate(userMessage, context)) {
         fullContent += chunk;
         hooks?.onChunk(state.currentAgent, chunk);
       }
+
       logger.log(`[LangGraph] run_task: LLM response received, length=${fullContent.length}`);
 
       const cleanContent = stripSpecialTags(fullContent);
+      const parsed = parseAgentOutput(fullContent);
+
+      stepCounter++;
+      reasoningSteps.push({
+        id: `step_${stepCounter}`,
+        thought: fullContent,
+        toolCall: null,
+        observation: '',
+        isDone: false,
+      });
 
       await conversationHistoryService.append(state.sessionId, {
         role: 'assistant',
@@ -104,7 +123,23 @@ function createRunTaskNode(
 
       hooks?.onAgentStreamEnd(state.currentAgent, cleanContent);
 
-      return { ...state, hasError: false, errorMessage: undefined, lastOutput: fullContent };
+      await cotWriter.writeAgentThinking(
+        state.sessionId,
+        agent.id,
+        agent.name,
+        plan,
+        reasoningSteps,
+        parsed.nextAgent || undefined,
+      );
+
+      return {
+        ...state,
+        hasError: false,
+        errorMessage: undefined,
+        lastOutput: fullContent,
+        reasoningSteps,
+        currentPlan: plan,
+      };
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
       logger.log(`[LangGraph] run_task: error=${errorMsg}`);
@@ -117,6 +152,7 @@ export function buildWorkflowGraph(
   agentRouter: AgentRouter,
   conversationHistoryService: ConversationHistoryService,
   streamHooksBySession: Map<string, SessionStreamHooks>,
+  cotWriter: CotWriterService,
 ) {
   const graph = new StateGraph(WorkflowAnnotation)
     .addNode(WORKFLOW_NODES.HYDRATE, async (state) => {
@@ -126,10 +162,14 @@ export function buildWorkflowGraph(
     .addNode(WORKFLOW_NODES.ROUTE, async (state) => {
       const mention = parseMention(state.messages.at(-1)?.content || '');
       const nextAgent = mention || (state.metadata.mentionedAgents as string[])?.[0] || 'Claude';
+      const userMessage = state.messages.at(-1)?.content || '';
       logger.log(`[LangGraph] route_message: resolved agent=${nextAgent}`);
-      return { ...state, nextAgent, currentAgent: nextAgent };
+      return { ...state, nextAgent, currentAgent: nextAgent, currentPlan: userMessage };
     })
-    .addNode(WORKFLOW_NODES.RUN_TASK, createRunTaskNode(agentRouter, conversationHistoryService, streamHooksBySession))
+    .addNode(
+      WORKFLOW_NODES.RUN_TASK,
+      createRunTaskNode(agentRouter, conversationHistoryService, streamHooksBySession, cotWriter),
+    )
     .addNode(WORKFLOW_NODES.CHECK_OUTPUT, async (state) => {
       const output = state.lastOutput || '';
       const parsed = parseAgentOutput(output);

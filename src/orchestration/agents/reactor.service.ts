@@ -20,8 +20,9 @@ export class ReactorService {
       yield {
         id: String(stepId++),
         thought,
-        action,
+        toolCall: { name: action, args: {} },
         observation,
+        isDone: false,
       };
     }
   }
