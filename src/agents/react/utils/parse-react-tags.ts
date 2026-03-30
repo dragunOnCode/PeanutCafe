@@ -9,7 +9,7 @@ export interface ParsedReactOutput {
 }
 
 export function parseReactOutput(content: string): ParsedReactOutput {
-  let normalized = content.replace(/\\</g, '<').replace(/\\>/g, '>');
+  const normalized = content.replace(/\\</g, '<').replace(/\\>/g, '>');
 
   const codeBlocks = extractCodeBlocks(normalized);
   for (const block of codeBlocks) {
@@ -73,46 +73,36 @@ export class StreamingReactParser {
       this.bufferStart = 0;
     }
 
-    const openMatch = this.buffer.match(/<(\w+)>/);
-    if (openMatch && !this.currentTag) {
-      this.currentTag = openMatch[1];
-      this.tagContent = '';
-      this.openTagClosed = false;
-      this.logger.debug(`Started tracking tag: ${this.currentTag}`);
-    }
-
-    if (this.currentTag) {
-      if (!this.openTagClosed) {
-        const openTagEndIndex = this.buffer.indexOf('>');
-        if (openTagEndIndex !== -1) {
+    while (this.buffer.length > 0) {
+      if (!this.currentTag) {
+        const openTagMatch = this.buffer.match(/^<(\w+)>/);
+        if (openTagMatch) {
+          this.currentTag = openTagMatch[1];
+          this.tagContent = '';
           this.openTagClosed = true;
-          this.contentStart = openTagEndIndex + 1;
-          const afterOpenTag = this.buffer.substring(this.contentStart);
-          if (afterOpenTag.length > 0) {
-            this.tagContent += afterOpenTag;
-          }
+          this.buffer = this.buffer.substring(openTagMatch[0].length);
+          this.logger.debug(`Started tracking tag: ${this.currentTag}`);
+        } else {
+          break;
         }
       } else {
-        this.tagContent += chunk;
-      }
+        const closePattern = `</${this.currentTag}>`;
+        const closeIndex = this.buffer.indexOf(closePattern);
+        if (closeIndex !== -1) {
+          const content = this.buffer.substring(0, closeIndex);
+          this.foundTags.add(this.currentTag);
+          this.logger.debug(`Completed tag: ${this.currentTag} = ${content.substring(0, 50)}...`);
 
-      const closePattern = `</${this.currentTag}>`;
-      const closeIndex = this.tagContent.indexOf(closePattern);
-      if (closeIndex !== -1) {
-        const content = this.tagContent.substring(0, closeIndex);
-        this.foundTags.add(this.currentTag);
-        this.logger.debug(`Completed tag: ${this.currentTag} = ${content.substring(0, 50)}...`);
+          const result: Partial<ParsedReactOutput> = {};
+          result[this.currentTag] = content;
 
-        const result: Partial<ParsedReactOutput> = {};
-        result[this.currentTag] = content;
+          this.buffer = this.buffer.substring(closeIndex + closePattern.length);
+          this.currentTag = null;
 
-        const consumedLength = this.contentStart + closeIndex + closePattern.length;
-        this.bufferStart = consumedLength;
-        this.currentTag = null;
-        this.tagContent = '';
-        this.openTagClosed = false;
-
-        return result;
+          return result;
+        } else {
+          break;
+        }
       }
     }
 

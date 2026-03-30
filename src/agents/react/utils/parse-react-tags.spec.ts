@@ -79,4 +79,26 @@ describe('StreamingReactParser', () => {
     expect(result2.done).toBe('完成');
     expect(parser.isComplete()).toBe(true);
   });
+
+  it('opening tag spanning chunks', () => {
+    const parser = new StreamingReactParser();
+    const chunk1 = parser.feed('<though');
+    const chunk2 = parser.feed('t>分析');
+    const chunk3 = parser.feed('中</thought>');
+
+    expect(chunk1.thought).toBeUndefined();
+    expect(chunk2.thought).toBeUndefined();
+    expect(chunk3.thought).toBe('分析中');
+  });
+
+  it('multiple tags interleaved across chunks', () => {
+    const parser = new StreamingReactParser();
+    const chunk1 = parser.feed('<though');
+    const chunk2 = parser.feed('t>思考</tho');
+    const chunk3 = parser.feed('ught><obser');
+    const chunk4 = parser.feed('vation>观察</observation>');
+
+    expect(chunk3.thought).toBe('思考');
+    expect(chunk4.observation).toBe('观察');
+  });
 });
