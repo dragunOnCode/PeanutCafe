@@ -52,8 +52,7 @@ describe('ToolExecutorService', () => {
     });
 
     it('should unwrap markdown code fence inside tool_call', () => {
-      const output =
-        '<tool_call>```json\n{"name": "read_file", "args": {"path": "x.txt"}}\n```</tool_call>';
+      const output = '<tool_call>```json\n{"name": "read_file", "args": {"path": "x.txt"}}\n```</tool_call>';
       const toolCalls = service.parseToolCalls(output);
       expect(toolCalls).toHaveLength(1);
       expect(toolCalls[0].name).toBe('read_file');

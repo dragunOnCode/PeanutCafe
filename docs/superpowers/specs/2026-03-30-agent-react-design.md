@@ -28,7 +28,8 @@
 
 - **混合模式**：保留现有 `streamGenerate`，新增 `executeWithReAct` 方法，场景可选
 - **渐进改进**：不破坏现有流程，现有功能保持不变
-- **解析健壮**：处理 Markdown 中 XML 标签的各种边界情况
+- **原生函数调用兼容**：ReAct 复用现有 `ToolExecutorService` 的原生 function calling 机制，不改变工具调用本质
+- **推理可视化**：XML 标签 (`<thought>`、`<observation>`、`<done>`) 仅用于推理过程输出，不参与工具调用
 
 ---
 
@@ -102,27 +103,38 @@ config/prompts/_shared/
 
 export interface ReasoningStep {
   id: string;
-  thought: string;
-  action: string | null; // 执行的工具调用
+  thought: string | null; // <thought> 标签内容
+  toolCall: { name: string; args: Record<string, unknown> } | null; // 原生 function calling
   observation: string; // 执行结果
   isDone: boolean; // 是否已完成
-  handoff?: string; // 交接目标 Agent
+  handoffAgent?: string; // 交接目标 Agent（来自 <handoff_agent>）
 }
 
+/**
+ * ReAct 配置
+ */
 export interface ReActConfig {
   maxSteps: number; // 最大步数限制，默认 10
   sessionId: string;
   onThoughtChunk?: (chunk: string) => void; // Thought 流式回调
-  onActionChunk?: (chunk: string) => void; // Action 流式回调
   onObservation?: (obs: string) => void; // Observation 完成回调
   onDone?: (result: string) => void; // 完成回调
 }
+
+/**
+ * LLM 调用器类型
+ * 由 Adapter 实现，持有 LLM client
+ */
+export type LLMCaller = (
+  messages: ChatMessage[],
+  tools: any[],
+) => AsyncGenerator<{ content?: string; tool_calls?: any[] }>;
 
 @Injectable()
 export class ReActExecutorService {
   constructor(
     private readonly toolExecutorService: ToolExecutorService,
-    private readonly reactPromptBuilder: ReactPromptBuilder,
+    private readonly llmCaller: LLMCaller,
   ) {}
 
   async *execute(messages: ChatMessage[], config: ReActConfig): AsyncGenerator<ReasoningStep> {
@@ -138,6 +150,7 @@ export class ReActExecutorService {
 
 export interface ReactPromptVars {
   name: string;
+  role?: string; // Agent 角色描述，可选
   maxSteps: number;
   availableTools: string; // 工具描述
   taskDescription: string; // 当前任务
@@ -185,26 +198,32 @@ async *executeWithReAct(
 ┌─────────┐  thought    ┌──────────┐
 │ REASON  │ ──────────→  │ DECISION │
 └─────────┘              └────┬─────┘
-                              │
-              ┌───────────────┼───────────────┐
-              ▼               ▼               ▼
-         <done>           <action>        handoff
-              │               │               │
-              ▼               ▼               ▼
-           [END]         [OBSERVE]       [END]
-                                │             │
-                                ▼             │
-                           ┌────────┐         │
-                           │ NEXT? │ ────────┘
-                           └────┬───┘
-                                │
-              ┌──────────────────┼──────────────────┐
-              ▼                  ▼                  ▼
-           step < max      step >= max        解析失败
-              │                  │                  │
-              ▼                  ▼                  ▼
-          [REASON]           [END]            [REASON]
+                               │
+               ┌───────────────┼───────────────┐
+               ▼               ▼               ▼
+          <done>        native func     <handoff_agent>
+           (text)         call              (text)
+               │               │               │
+               ▼               ▼               ▼
+            [END]         [OBSERVE]       [END]
+                                 │             │
+                                 ▼             │
+                            ┌────────┐         │
+                            │ NEXT? │ ────────┘
+                            └────┬───┘
+                                 │
+               ┌──────────────────┼──────────────────┐
+               ▼                  ▼                  ▼
+            step < max      step >= max        解析失败
+               │                  │                  │
+               ▼                  ▼                  ▼
+           [REASON]           [END]            [REASON]
 ```
+
+**关键说明**：
+
+- **Tool 调用**：使用原生 function calling，LLM 通过 `tool_calls` 参数请求调用，**不**通过 XML 标签
+- **XML 标签**：仅用于推理过程可视化 (`<thought>`、`<observation>`、`<done>`、`<handoff_agent>`)
 
 ### 4.2 每步执行细节
 
@@ -220,9 +239,9 @@ async *executeWithReAct(
 **Step N: ACTION 阶段**（如有工具调用）
 
 ```
-1. LLM 输出 <action> 标签内的工具调用
-2. action 内容流式 yield 给前端
-3. ToolExecutorService 解析并执行工具
+1. LLM 通过原生 function calling 请求工具调用
+2. 从 LLM response 的 tool_calls 字段解析工具名和参数
+3. ToolExecutorService 执行工具
 4. 执行结果封装为 <observation>
 ```
 
@@ -236,12 +255,12 @@ async *executeWithReAct(
 
 ### 4.3 终止条件
 
-| 条件                 | 行为                            |
-| -------------------- | ------------------------------- |
-| LLM 输出 `<done>`    | 提取完成内容，结束循环          |
-| 达到 `max_steps`     | 强制结束，返回已积累的步骤      |
-| LLM 输出 `<handoff>` | 触发 Agent 交接流程             |
-| 解析失败（格式错误） | 重试一次，仍失败则进入下一 step |
+| 条件                       | 行为                            |
+| -------------------------- | ------------------------------- |
+| LLM 输出 `<done>`          | 提取完成内容，结束循环          |
+| 达到 `max_steps`           | 强制结束，返回已积累的步骤      |
+| LLM 输出 `<handoff_agent>` | 触发 Agent 交接流程             |
+| 解析失败（格式错误）       | 重试一次，仍失败则进入下一 step |
 
 ---
 
@@ -260,6 +279,8 @@ LLM 返回 Markdown 格式时，XML 标签可能出现以下变体：
 | 多余空白     | `<thought>  分析...  </thought>`                 |
 | 嵌套代码块   | ` ```html\n<thought>```js\ncode\n```</thought> ` |
 
+**注意**：工具调用通过原生 function calling 处理，不通过 XML 标签。XML 标签仅用于推理过程可视化。
+
 ### 5.2 解析策略
 
 ````typescript
@@ -267,10 +288,9 @@ LLM 返回 Markdown 格式时，XML 标签可能出现以下变体：
 
 export interface ParsedReactOutput {
   thought: string | null;
-  action: string | null; // tool_call XML
   observation: string | null;
   done: string | null;
-  handoff: string | null;
+  handoffAgent: string | null; // <handoff_agent>
   raw: string;
 }
 
@@ -293,12 +313,11 @@ export function parseReactOutput(content: string): ParsedReactOutput {
 
 function extractTagsFromText(text: string, opts?: { raw?: string }): Partial<ParsedReactOutput> {
   const thought = extractSingleTag(text, 'thought');
-  const action = extractSingleTag(text, 'action');
   const observation = extractSingleTag(text, 'observation');
   const done = extractSingleTag(text, 'done');
-  const handoff = extractSingleTag(text, 'handoff');
+  const handoffAgent = extractSingleTag(text, 'handoff_agent');
 
-  return { thought, action, observation, done, handoff, raw: opts?.raw ?? text };
+  return { thought, observation, done, handoffAgent, raw: opts?.raw ?? text };
 }
 
 function extractSingleTag(text: string, tagName: string): string | null {
@@ -365,7 +384,7 @@ export class StreamingReactParser {
   }
 
   isComplete(): boolean {
-    return this.foundTags.has('done') || this.foundTags.has('handoff');
+    return this.foundTags.has('done') || this.foundTags.has('handoff_agent');
   }
 }
 ```
@@ -383,10 +402,12 @@ export interface WorkflowState {
   // ... 现有字段 ...
 
   // 新增
-  useReAct?: boolean; // 是否启用 ReAct 模式
-  reactMaxSteps?: number; // ReAct 最大步数
+  useReAct: boolean; // 是否启用 ReAct 模式，默认 true
+  reactMaxSteps?: number; // ReAct 最大步数，默认 10
 }
 ```
+
+**注意**：`ReasoningStep` 类型将在 `workflow.state.ts` 中**替换**现有定义，而非新增。
 
 ### 6.2 run_task 节点变更
 
@@ -424,23 +445,23 @@ const createRunTaskNode = () =>
 
 ### 6.3 触发方式
 
-通过消息中的特殊标记触发 ReAct 模式：
-
-```
-@Claude [REACT] 实现排序算法
-```
-
-或在 state.metadata 中传递：
+通过 `state.metadata.useReAct` 布尔值切换 ReAct 模式，**默认开启**：
 
 ```typescript
+// state.metadata 中的配置
 {
   mentionedAgents: ['Claude'],
   metadata: {
-    useReAct: true,
-    reactMaxSteps: 15,
+    useReAct: true,        // 默认 true，可设置为 false 禁用
+    reactMaxSteps: 15,     // 可选，默认 10
   }
 }
 ```
+
+**触发逻辑**：
+
+- `useReAct === true`：调用 `agent.executeWithReAct()`
+- `useReAct === false` 或未设置：调用 `agent.streamGenerate()`
 
 ---
 
@@ -469,13 +490,13 @@ const createRunTaskNode = () =>
 
 ### 执行规则
 
-1. **每一步只能选择一个输出**：思考完成后，要么执行工具，要么声明完成
+1. **显式推理**：在执行工具前，先用 `<thought>` 标签输出你的思考过程
 2. **保持简洁**：thought 聚焦于分析，不要冗长
 3. **错误恢复**：工具执行失败后，继续思考下一步
 
 ### 输出格式
 
-**必须使用以下 XML 标签之一：**
+**必须使用以下 XML 标签进行推理可视化：**
 
 #### 思考
 ```
@@ -483,14 +504,6 @@ const createRunTaskNode = () =>
 <thought>
 [你的分析：已了解什么信息，当前状态，下一步做什么]
 </thought>
-```
-
-#### 执行工具（如需要）
-
-```
-<action>
-<tool_call>{"name": "工具名", "args": {"参数": "值"}}</tool_call>
-</action>
 ```
 
 #### 获取结果
@@ -512,16 +525,16 @@ const createRunTaskNode = () =>
 #### 交接（如需要）
 
 ```
-<handoff>
+<handoff_agent>
 [目标Agent名称]
-</handoff>
+</handoff_agent>
 ```
 
 ### 终止条件
 
 - 使用 `<done>` 标签输出最终结果后，任务结束
+- 使用 `<handoff_agent>` 标签后，触发交接流程
 - 最大执行步数：{maxSteps}（达到后强制结束）
-- 交接后，原 Agent 停止执行
 
 ### 示例
 
@@ -533,21 +546,21 @@ const createRunTaskNode = () =>
 <thought>
 用户要求创建一个 README.md 文件。我需要使用 write_file 工具来完成这个任务。
 </thought>
+```
 
-<action>
-<tool_call>{"name": "write_file", "args": {"path": "README.md", "content": "# My Project"}}</tool_call>
-</action>
+（工具调用通过 function calling 接口执行，不在 text 输出）
 
+```
 <observation>
 文件已成功创建
 </observation>
+```
 
+```
 <done>
 已完成 README.md 文件的创建。
 </done>
 ```
-
-````
 
 ---
 
@@ -555,13 +568,13 @@ const createRunTaskNode = () =>
 
 ### 8.1 错误场景与处理
 
-| 场景 | 检测方式 | 处理策略 |
-|------|---------|---------|
-| 工具执行失败 | `result.success === false` | 输出 error observation，继续循环 |
-| 工具不存在 | `ToolNotFoundError` | 输出 error observation，可重试 |
-| LLM 输出格式错误 | 无法解析出有效标签 | 重试一次该 step |
-| 超过 max_steps | step 计数器 | 强制结束，yield 已积累的步骤 |
-| 网络/API 错误 | 异常捕获 | 进入 HANDLE_ERROR 节点 |
+| 场景             | 检测方式                   | 处理策略                         |
+| ---------------- | -------------------------- | -------------------------------- |
+| 工具执行失败     | `result.success === false` | 输出 error observation，继续循环 |
+| 工具不存在       | `ToolNotFoundError`        | 输出 error observation，可重试   |
+| LLM 输出格式错误 | 无法解析出有效标签         | 重试一次该 step                  |
+| 超过 max_steps   | step 计数器                | 强制结束，yield 已积累的步骤     |
+| 网络/API 错误    | 异常捕获                   | 进入 HANDLE_ERROR 节点           |
 
 ### 8.2 重试机制
 
@@ -591,7 +604,7 @@ private async executeStepWithRetry(
     }
   }
 }
-````
+```
 
 ---
 
