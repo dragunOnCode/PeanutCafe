@@ -11,6 +11,8 @@ import {
 import { Message } from '../../common/types';
 import { ToolExecutorService } from '../tools/tool-executor.service';
 import { PromptBuilder } from '../prompts/prompt-builder';
+import { ReActExecutorService, ReActConfig, LLMCaller } from '../react/react-executor.service';
+import { ReactPromptBuilder } from '../react/react-prompt.builder';
 
 type NativeMessage = OpenAI.ChatCompletionMessageParam;
 
@@ -33,6 +35,7 @@ export class CodexAdapter implements ILLMAdapter {
     private readonly configService: ConfigService,
     private readonly toolExecutorService: ToolExecutorService,
     private readonly promptBuilder: PromptBuilder,
+    private readonly reactPromptBuilder: ReactPromptBuilder,
   ) {
     this.client = new OpenAI({
       apiKey: this.configService.getOrThrow<string>('GLM_API_KEY'),
@@ -152,6 +155,93 @@ export class CodexAdapter implements ILLMAdapter {
       throw error;
     } finally {
       this.status = AgentStatus.ONLINE;
+    }
+  }
+
+  /**
+   * ReAct 模式的流式执行
+   * 通过显式的 Thought → Action → Observation 循环增强推理透明度
+   */
+  async *executeWithReAct(
+    message: string,
+    context: AgentContext,
+    options?: { maxSteps?: number },
+  ): AsyncGenerator<string> {
+    this.status = AgentStatus.BUSY;
+    this.logger.log(`Codex executeWithReAct started for session ${context.sessionId}`);
+
+    this.toolExecutorService.registerSessionTools(context.sessionId);
+    const tools = this.toolExecutorService.getOpenAITools();
+
+    try {
+      const systemPrompt = this.reactPromptBuilder.buildSystemPrompt({
+        name: this.name,
+        role: this.role,
+        taskDescription: message,
+        availableTools: tools.map((t: any) => t.function.name).join(', '),
+        maxSteps: options?.maxSteps ?? 10,
+      });
+
+      const messages: any[] = [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: message },
+      ];
+
+      const llmCaller: LLMCaller = async function* (msgs: any[], _tools: any[]) {
+        const stream = await this.client.chat.completions.create({
+          model: this.model,
+          messages: msgs,
+          tools: _tools.length > 0 ? _tools : undefined,
+          tool_choice: _tools.length > 0 ? 'auto' : undefined,
+          temperature: 0.7,
+          max_tokens: 4000,
+          stream: true,
+        });
+
+        for await (const chunk of stream) {
+          const delta = chunk.choices?.[0]?.delta;
+          if (delta?.content) {
+            yield { content: delta.content };
+          }
+          if (delta?.tool_calls) {
+            yield { tool_calls: delta.tool_calls };
+          }
+        }
+      }.bind(this);
+
+      const executor = new ReActExecutorService(this.toolExecutorService, llmCaller);
+
+      const config: ReActConfig = {
+        maxSteps: options?.maxSteps ?? 10,
+        sessionId: context.sessionId,
+        onThoughtChunk: (chunk) => {
+          this.logger.debug(`Thought chunk: ${chunk.substring(0, 50)}...`);
+        },
+        onObservation: (obs) => {
+          this.logger.debug(`Observation: ${obs.substring(0, 50)}...`);
+        },
+        onDone: (result) => {
+          this.logger.log(`ReAct completed with result: ${result.substring(0, 50)}...`);
+        },
+      };
+
+      for await (const step of executor.execute(messages, config)) {
+        if (step.thought) {
+          yield `<thought>${step.thought}</thought>`;
+        }
+        if (step.observation) {
+          yield `<observation>${step.observation}</observation>`;
+        }
+        if (step.isDone) {
+          yield `<done>${step.observation}</done>`;
+        }
+        if (step.handoffAgent) {
+          yield `<handoff_agent>${step.handoffAgent}</handoff_agent>`;
+        }
+      }
+    } finally {
+      this.status = AgentStatus.ONLINE;
+      this.logger.log(`Codex executeWithReAct finished for session ${context.sessionId}`);
     }
   }
 
