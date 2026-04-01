@@ -94,9 +94,25 @@ function createRunTaskNode(
       logger.log(`[LangGraph] run_task: calling LLM with message: ${userMessage.substring(0, 50)}...`);
       let fullContent = '';
 
-      for await (const chunk of agent.streamGenerate(userMessage, context)) {
-        fullContent += chunk;
-        hooks?.onChunk(state.currentAgent, chunk);
+      // 根据 useReAct 配置选择执行模式（默认开启 ReAct）
+      const useReAct = state.metadata.useReAct !== false;
+
+      if (useReAct && 'executeWithReAct' in agent) {
+        // ReAct 模式：显式推理循环
+        logger.log(`[LangGraph] run_task: using ReAct mode for ${state.currentAgent}`);
+        for await (const chunk of (agent as any).executeWithReAct(userMessage, context, {
+          maxSteps: (state.metadata.reactMaxSteps as number) ?? 10,
+        })) {
+          fullContent += chunk;
+          hooks?.onChunk(state.currentAgent, chunk);
+        }
+      } else {
+        // 标准模式：原有 tool-use 循环
+        logger.log(`[LangGraph] run_task: using standard mode for ${state.currentAgent}`);
+        for await (const chunk of agent.streamGenerate(userMessage, context)) {
+          fullContent += chunk;
+          hooks?.onChunk(state.currentAgent, chunk);
+        }
       }
 
       logger.log(`[LangGraph] run_task: LLM response received, length=${fullContent.length}`);
