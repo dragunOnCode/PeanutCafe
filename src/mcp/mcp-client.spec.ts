@@ -8,9 +8,8 @@ import { mcpDirectHttpPost } from './mcp-direct-http';
 const httpPost = jest.mocked(mcpDirectHttpPost);
 
 function bindFetchMock(fetchMock: jest.Mock) {
-  httpPost.mockImplementation(
-    (url: string, headers: Record<string, string>, body: string, signal?: AbortSignal) =>
-      fetchMock(url, { method: 'POST', headers, body, signal }),
+  httpPost.mockImplementation((url: string, headers: Record<string, string>, body: string, signal?: AbortSignal) =>
+    fetchMock(url, { method: 'POST', headers, body, signal }),
   );
 }
 

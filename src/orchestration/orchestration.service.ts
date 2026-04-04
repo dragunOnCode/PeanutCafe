@@ -1,32 +1,22 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { AgentRouter } from '../gateway/agent-router';
+import { SessionContextService } from './context/session-context.service';
 import { CotWriterService } from './chain-of-thought/cot-writer.service';
 import { PlannerService } from './agents/planner.service';
 import { ReactorService } from './agents/reactor.service';
-import { ConversationHistoryService } from '../memory/services/conversation-history.service';
-import type { WorkflowState, ReasoningStep } from './state/workflow.state';
+import type { WorkflowState } from './state/workflow.state';
 import { buildWorkflowGraph, SessionStreamHooks } from './graph/workflow.graph';
 
-/**
- * WorkflowEvent - 工作流事件类型
- * 用于 WebSocket 转发给前端
- */
 export type WorkflowEvent =
   | { type: 'task_start'; agentName: string; task: string }
   | { type: 'task_complete'; output: string }
   | { type: 'chunk'; agentName: string; delta: string }
-  /** 单次 run_task（单个 Agent 一轮 LLM 输出）结束；交接下一个 Agent 前会先收到本条 */
   | { type: 'agent_stream_end'; agentName: string; fullContent: string }
   | { type: 'needs_review'; reason: string }
   | { type: 'needs_decision'; error?: string }
   | { type: 'handoff'; from: string; to: string }
   | { type: 'complete'; finalOutput: string; agentName: string };
 
-/**
- * 简单的异步队列：支持多生产者（push）和单消费者（AsyncIterator）并发使用。
- * 生产者在图执行线程里调用 push / end / fail；
- * 消费者在 streamExecute 的 for-await 里逐个读出事件。
- */
 class AsyncQueue<T> {
   private readonly items: T[] = [];
   private readonly waiters: Array<() => void> = [];
@@ -40,14 +30,14 @@ class AsyncQueue<T> {
 
   end(): void {
     this.done = true;
-    for (const w of this.waiters) w();
+    for (const waiter of this.waiters) waiter();
     this.waiters.length = 0;
   }
 
   fail(error: Error): void {
     this.err = error;
     this.done = true;
-    for (const w of this.waiters) w();
+    for (const waiter of this.waiters) waiter();
     this.waiters.length = 0;
   }
 
@@ -60,7 +50,7 @@ class AsyncQueue<T> {
         if (this.err) throw this.err;
         return;
       }
-      await new Promise<void>((r) => this.waiters.push(r));
+      await new Promise<void>((resolve) => this.waiters.push(resolve));
     }
   }
 }
@@ -68,7 +58,6 @@ class AsyncQueue<T> {
 @Injectable()
 export class OrchestrationService {
   private readonly logger = new Logger(OrchestrationService.name);
-
   private readonly sessionStreamHooks = new Map<string, SessionStreamHooks>();
   private compiledGraph: ReturnType<typeof buildWorkflowGraph> | null = null;
 
@@ -77,14 +66,14 @@ export class OrchestrationService {
     private readonly cotWriter: CotWriterService,
     private readonly planner: PlannerService,
     private readonly reactor: ReactorService,
-    private readonly conversationHistoryService: ConversationHistoryService,
+    private readonly sessionContextService: SessionContextService,
   ) {}
 
   private getGraph(): ReturnType<typeof buildWorkflowGraph> {
     if (!this.compiledGraph) {
       this.compiledGraph = buildWorkflowGraph(
         this.agentRouter,
-        this.conversationHistoryService,
+        this.sessionContextService,
         this.sessionStreamHooks,
         this.cotWriter,
       );
@@ -92,11 +81,6 @@ export class OrchestrationService {
     return this.compiledGraph;
   }
 
-  /**
-   * 异步流式执行工作流。
-   * 使用 AsyncQueue 将图内部产生的 chunk 事件与图节点完成事件合并，
-   * 实现真正的实时流式输出。
-   */
   async *streamExecute(
     sessionId: string,
     userMessage: string,
@@ -120,20 +104,14 @@ export class OrchestrationService {
     let state = this.createInitialState(sessionId, userMessage, mentionedAgents);
     const graph = this.getGraph();
 
-    // 在后台并发运行图，图节点产生的 chunk 通过 chunkCallbacks 推入队列；
-    // 图节点完成后产生的 WorkflowEvent 也推入同一队列。
     void (async () => {
       try {
         const graphStream = await graph.stream(state);
         for await (const step of graphStream) {
           const stepState = Object.values(step)[0] as Partial<WorkflowState>;
           state = { ...state, ...stepState };
-
-          this.logger.log(`[OrchestrationService] Graph step: node=${Object.keys(step)[0]}`);
-
           const event = this.stateToEvent(state);
           if (event) {
-            this.logger.log(`[OrchestrationService] Emitting event: type=${event.type}`);
             queue.push(event);
           }
         }
@@ -152,73 +130,56 @@ export class OrchestrationService {
     }
   }
 
-  /**
-   * 同步执行工作流（供 ChatGateway 使用）
-   * 内部调用 streamExecute 并消费所有事件
-   */
   async executeWorkflow(sessionId: string, userMessage: string, mentionedAgents: string[]): Promise<void> {
     this.logger.log(`[OrchestrationService] executeWorkflow started: sessionId=${sessionId}`);
-
-    for await (const _ of this.streamExecute(sessionId, userMessage, mentionedAgents)) {
+    for await (const event of this.streamExecute(sessionId, userMessage, mentionedAgents)) {
+      void event;
     }
-
     this.logger.log(`[OrchestrationService] executeWorkflow completed: sessionId=${sessionId}`);
   }
 
-  /**
-   * 创建初始工作流状态
-   */
   private createInitialState(sessionId: string, userMessage: string, mentionedAgents: string[]): WorkflowState {
     return {
       sessionId,
-      messages: [
-        {
-          id: '1',
-          role: 'user',
-          content: userMessage,
-          timestamp: new Date().toISOString(),
-        },
-      ],
-      pendingTasks: [],
-      completedTasks: [],
-      currentAgent: null,
-      nextAgent: null,
-      isComplete: false,
-      chainOfThought: [],
+      entryMessageId: 'msg-1',
+      activeAgent: null,
+      pendingHandoff: null,
+      planInput: userMessage,
+      lastAgentResult: null,
+      control: {
+        needsReview: false,
+        hasError: false,
+      },
+      status: 'routing',
+      config: {
+        mentionedAgents,
+        useReAct: true,
+        reactMaxSteps: 10,
+      },
       reasoningSteps: [],
-      currentPlan: userMessage,
-      hasError: false,
-      needsReview: false,
-      useReAct: true,
-      metadata: { mentionedAgents },
     };
   }
 
-  /**
-   * 将 WorkflowState 转换为 WorkflowEvent
-   * 根据状态变化产生相应事件
-   */
   private stateToEvent(state: WorkflowState): WorkflowEvent | null {
-    if (state.currentAgent && state.nextAgent === state.currentAgent && !state.lastOutput) {
-      return { type: 'task_start', agentName: state.currentAgent, task: '任务执行中' };
+    if (state.status === 'running' && state.activeAgent && !state.lastAgentResult) {
+      return { type: 'task_start', agentName: state.activeAgent, task: '任务执行中' };
     }
-
-    if (state.lastOutput && !state.needsReview && !state.hasError && !state.nextAgent) {
-      return { type: 'complete', finalOutput: state.lastOutput, agentName: state.currentAgent ?? '' };
+    if (state.status === 'completed' && state.lastAgentResult) {
+      return {
+        type: 'complete',
+        finalOutput: state.lastAgentResult.cleanOutput,
+        agentName: state.lastAgentResult.agentName,
+      };
     }
-
-    if (state.needsReview) {
+    if (state.status === 'awaiting_review' && state.control.needsReview) {
       return { type: 'needs_review', reason: state.reviewReason || '任务需要人工审核' };
     }
-
-    if (state.hasError) {
-      return { type: 'needs_decision', error: state.errorMessage };
+    if (state.status === 'failed' && state.control.hasError) {
+      return { type: 'needs_decision', error: state.control.errorMessage };
     }
-
-    if (state.nextAgent && state.currentAgent && state.nextAgent !== state.currentAgent) {
-      return { type: 'handoff', from: state.currentAgent, to: state.nextAgent };
+    if (state.status === 'handoff' && state.pendingHandoff && state.activeAgent) {
+      return { type: 'handoff', from: state.activeAgent, to: state.pendingHandoff.targetAgent };
     }
-
     return null;
   }
 

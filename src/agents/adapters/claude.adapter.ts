@@ -8,10 +8,9 @@ import {
   AgentStatus,
   DecisionResult,
 } from '../interfaces/llm-adapter.interface';
-import { Message } from '../../common/types';
 import { ToolExecutorService } from '../tools/tool-executor.service';
 import { PromptBuilder } from '../prompts/prompt-builder';
-import { ReActExecutorService, ReActConfig, LLMCaller, ReActStreamEvent } from '../react/react-executor.service';
+import { ReActExecutorService, ReActConfig, LLMCaller, ReActStreamEvent, ChatMessage } from '../react/react-executor.service';
 import { ReactPromptBuilder } from '../react/react-prompt.builder';
 import { ConversationHistoryService } from '../../memory/services/conversation-history.service';
 
@@ -27,7 +26,7 @@ export class ClaudeAdapter implements ILLMAdapter {
   readonly type = 'claude';
   readonly role = '架构设计与编码实现';
   readonly capabilities = ['架构设计', '代码生成', '技术选型', '重构'];
-  readonly callType: 'http' = 'http';
+  readonly callType = 'http' as const;
 
   private status: AgentStatus = AgentStatus.ONLINE;
   private client: OpenAI;
@@ -77,7 +76,8 @@ export class ClaudeAdapter implements ILLMAdapter {
         timestamp: new Date(),
       };
     } catch (error) {
-      this.logger.error(`Claude generate error: ${error.message}`);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.logger.error(`Claude generate error: ${errorMessage}`);
       throw error;
     } finally {
       this.status = AgentStatus.ONLINE;
@@ -95,7 +95,7 @@ export class ClaudeAdapter implements ILLMAdapter {
       this.logger.log(`Claude streamGenerate input messages: ${JSON.stringify(currentMessages)}`);
 
       while (true) {
-        const stream = await this.client.chat.completions.create({
+        const stream = (await this.client.chat.completions.create({
           model: this.model,
           messages: currentMessages,
           tools: tools.length > 0 ? tools : undefined,
@@ -103,7 +103,7 @@ export class ClaudeAdapter implements ILLMAdapter {
           temperature: 0.7,
           max_tokens: 4000,
           stream: true,
-        });
+        })) as AsyncIterable<OpenAI.ChatCompletionChunk>;
 
         let textBuffer = '';
         const partialToolCalls = new Map<number, { id: string; name: string; args: string }>();
@@ -144,12 +144,14 @@ export class ClaudeAdapter implements ILLMAdapter {
         });
 
         for (const tc of partialToolCalls.values()) {
-          let args: Record<string, unknown>;
+          let args: Record<string, unknown> = {};
           try {
-            args = JSON.parse(tc.args);
+            const parsedArgs: unknown = JSON.parse(tc.args);
+            if (parsedArgs && typeof parsedArgs === 'object' && !Array.isArray(parsedArgs)) {
+              args = parsedArgs as Record<string, unknown>;
+            }
           } catch {
             this.logger.error(`Claude: failed to parse tool args for ${tc.name}: ${tc.args}`);
-            args = {};
           }
 
           const result = await this.toolExecutorService.executeToolCall({ id: tc.id, name: tc.name, args });
@@ -163,7 +165,8 @@ export class ClaudeAdapter implements ILLMAdapter {
         }
       }
     } catch (error) {
-      this.logger.error(`Claude streamGenerate error: ${error.message}`);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.logger.error(`Claude streamGenerate error: ${errorMessage}`);
       throw error;
     } finally {
       this.status = AgentStatus.ONLINE;
@@ -186,37 +189,43 @@ export class ClaudeAdapter implements ILLMAdapter {
     const tools = this.toolExecutorService.getOpenAITools();
 
     try {
+      const availableTools = tools
+        .map((tool) => ('function' in tool && typeof tool.function.name === 'string' ? tool.function.name : 'unknown'))
+        .join(', ');
+
       const systemPrompt = await this.reactPromptBuilder.buildSystemPrompt(context.sessionId, this.type, {
         name: this.name,
         role: this.role,
         model: this.model,
         taskDescription: message,
-        availableTools: tools.map((t: any) => t.function.name).join(', '),
+        availableTools,
         maxSteps: options?.maxSteps ?? 10,
       });
 
-      const historyMessages: any[] = (context.conversationHistory || []).map((m) => ({
+      const historyMessages: ChatMessage[] = (context.conversationHistory ?? []).map((m) => ({
         role: m.role,
         content: m.content,
         name: m.agentName,
       }));
 
-      const messages: any[] = [
+      const messages: ChatMessage[] = [
         { role: 'system', content: systemPrompt },
         ...historyMessages,
         { role: 'user', content: message },
       ];
 
-      const llmCaller: LLMCaller = async function* (msgs: any[], _tools: any[]) {
-        const stream = await this.client.chat.completions.create({
-          model: this.model,
-          messages: msgs,
-          tools: _tools.length > 0 ? _tools : undefined,
-          tool_choice: _tools.length > 0 ? 'auto' : undefined,
+      const client = this.client;
+      const model = this.model;
+      const llmCaller: LLMCaller = async function* (msgs: ChatMessage[], llmTools: OpenAI.ChatCompletionTool[]) {
+        const stream = (await client.chat.completions.create({
+          model,
+          messages: msgs as unknown as NativeMessage[],
+          tools: llmTools.length > 0 ? llmTools : undefined,
+          tool_choice: llmTools.length > 0 ? 'auto' : undefined,
           temperature: 0.7,
           max_tokens: 4000,
           stream: true,
-        });
+        })) as AsyncIterable<OpenAI.ChatCompletionChunk>;
 
         for await (const chunk of stream) {
           const delta = chunk.choices?.[0]?.delta;
@@ -227,7 +236,7 @@ export class ClaudeAdapter implements ILLMAdapter {
             yield { tool_calls: delta.tool_calls };
           }
         }
-      }.bind(this);
+      };
 
       const executor = new ReActExecutorService(this.toolExecutorService, llmCaller);
 
@@ -262,12 +271,12 @@ export class ClaudeAdapter implements ILLMAdapter {
     }
   }
 
-  async shouldRespond(message: Message, context: AgentContext): Promise<DecisionResult> {
-    return { should: true, reason: 'Claude adapter always responds', priority: 'medium' };
+  shouldRespond(): Promise<DecisionResult> {
+    return Promise.resolve({ should: true, reason: 'Claude adapter always responds', priority: 'medium' });
   }
 
-  async healthCheck(): Promise<boolean> {
-    return this.status !== AgentStatus.ERROR;
+  healthCheck(): Promise<boolean> {
+    return Promise.resolve(this.status !== AgentStatus.ERROR);
   }
 
   getStatus(): AgentStatus {

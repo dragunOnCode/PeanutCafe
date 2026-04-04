@@ -1,4 +1,4 @@
-import { Message } from '../../common/types';
+import { SessionTurn } from '../../common/types';
 
 /**
  * 内部消息格式，`name` 字段与 OpenAI Chat Completions API 的 name 语义一致，
@@ -11,7 +11,7 @@ export type ChatMessage = { role: 'system' | 'user' | 'assistant'; name?: string
  */
 export function buildChatMessages(
   systemPrompt: string,
-  conversationHistory: Message[] | undefined,
+  conversationHistory: SessionTurn[] | undefined,
   options?: { maxRecent?: number },
 ): ChatMessage[] {
   const maxRecent = options?.maxRecent ?? 10;

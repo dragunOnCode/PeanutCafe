@@ -6,7 +6,7 @@ import Redis from 'ioredis';
 import { MessageEntity } from '../../database/entities/message.entity';
 
 export interface MemoryEntry {
-  role: 'user' | 'assistant';
+  role: 'user' | 'assistant' | 'system';
   content: string;
   agentId?: string;
   agentName?: string;
@@ -75,7 +75,7 @@ export class ShortTermMemoryService implements OnModuleDestroy {
     });
 
     const entries: MemoryEntry[] = messages.map((msg) => ({
-      role: msg.role as 'user' | 'assistant',
+      role: msg.role as MemoryEntry['role'],
       content: msg.content,
       agentId: msg.agentId || undefined,
       agentName: msg.agentName || undefined,

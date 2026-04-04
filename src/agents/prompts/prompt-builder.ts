@@ -1,12 +1,12 @@
 // src/agents/prompts/prompt-builder.ts
 import { Injectable } from '@nestjs/common';
 import { PromptTemplateService } from './prompt-template.service';
-import { Message } from '../../common/types';
+import { SessionTurn } from '../../common/types';
 import { ChatMessage } from '../utils/build-chat-messages';
 
 interface AgentContext {
   sessionId: string;
-  conversationHistory?: Message[];
+  conversationHistory?: SessionTurn[];
   sharedMemory?: Record<string, unknown>;
 }
 

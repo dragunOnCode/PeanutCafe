@@ -75,7 +75,7 @@ export class ReActExecutorService {
             config.onThoughtChunk?.(chunk.content);
           }
           if (chunk.tool_calls) {
-            for (const tc of chunk.tool_calls as any[]) {
+            for (const tc of chunk.tool_calls) {
               const idx: number = tc.index ?? 0;
               const existing = partialToolCalls.get(idx) ?? { id: '', name: '', args: '' };
               if (tc.id) existing.id = tc.id;

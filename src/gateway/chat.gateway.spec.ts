@@ -7,30 +7,46 @@ describe('ChatGateway streaming agent responses', () => {
 
   let gateway: ChatGateway;
   let serverEmit: jest.Mock;
-  let conversationHistoryService: { getContext: jest.Mock; append: jest.Mock };
+  let sessionContextService: {
+    getContext: jest.Mock;
+    appendUserTurn: jest.Mock;
+    appendAssistantTurn: jest.Mock;
+    appendHandoffSummary: jest.Mock;
+  };
   let transcriptService: { appendEntry: jest.Mock };
   let messageRepository: { create: jest.Mock; save: jest.Mock };
   let sessionRepository: { exist: jest.Mock; create: jest.Mock; save: jest.Mock };
   let priorityService: { recordUsage: jest.Mock; updateConfig: jest.Mock };
   let deletionService: { deleteSession: jest.Mock };
   let deletionQueue: { add: jest.Mock };
-  let client: { disconnect: jest.Mock };
+  let messageRouter: { parseMessage: jest.Mock };
+  let agentRouter: { registerAgent: jest.Mock; route: jest.Mock; getAgentByName: jest.Mock };
+  let orchestrationService: { streamExecute: jest.Mock };
+  let client: { disconnect: jest.Mock; handshake: { query: Record<string, unknown> } };
 
   beforeEach(() => {
-    client = { disconnect: jest.fn() };
+    client = {
+      disconnect: jest.fn(),
+      handshake: { query: { userId: null } },
+    };
     serverEmit = jest.fn();
-    conversationHistoryService = {
+    sessionContextService = {
       getContext: jest.fn().mockResolvedValue({
         sessionId,
-        messages: [
+        turns: [
           {
+            id: 'turn-1',
+            sessionId,
             role: 'user',
+            kind: 'user',
             content: prompt,
-            timestamp: '2026-03-21T00:00:00.000Z',
+            createdAt: new Date('2026-03-21T00:00:00.000Z'),
           },
         ],
       }),
-      append: jest.fn().mockResolvedValue(undefined),
+      appendUserTurn: jest.fn().mockResolvedValue(undefined),
+      appendAssistantTurn: jest.fn().mockResolvedValue(undefined),
+      appendHandoffSummary: jest.fn().mockResolvedValue(undefined),
     };
     transcriptService = {
       appendEntry: jest.fn().mockResolvedValue(undefined),
@@ -54,6 +70,25 @@ describe('ChatGateway streaming agent responses', () => {
     deletionQueue = {
       add: jest.fn().mockResolvedValue(undefined),
     };
+    messageRouter = {
+      parseMessage: jest.fn().mockReturnValue({
+        mentionedAgents: [],
+      }),
+    };
+    agentRouter = {
+      registerAgent: jest.fn(),
+      route: jest.fn().mockReturnValue({
+        processedContent: prompt,
+        targetAgents: [],
+      }),
+      getAgentByName: jest.fn().mockImplementation((name: string) => ({
+        id: `${name.toLowerCase()}-001`,
+        name,
+      })),
+    };
+    orchestrationService = {
+      streamExecute: jest.fn(),
+    };
 
     gateway = new ChatGateway(
       {
@@ -63,9 +98,9 @@ describe('ChatGateway streaming agent responses', () => {
         getActiveClientCount: jest.fn(),
         getSessionClients: jest.fn().mockReturnValue([]),
       } as never,
-      { parseMessage: jest.fn(), route: jest.fn() } as never,
-      { registerAgent: jest.fn() } as never,
-      conversationHistoryService as never,
+      messageRouter as never,
+      agentRouter as never,
+      sessionContextService as never,
       transcriptService as never,
       {} as never,
       messageRepository as never,
@@ -76,6 +111,9 @@ describe('ChatGateway streaming agent responses', () => {
       {} as never,
       deletionService as never,
       deletionQueue as never,
+      { initializeSessionPrompts: jest.fn().mockResolvedValue(undefined) } as never,
+      { buildMessages: jest.fn() } as never,
+      orchestrationService as never,
     );
 
     gateway.server = {
@@ -83,6 +121,42 @@ describe('ChatGateway streaming agent responses', () => {
         emit: serverEmit,
       }),
     } as never;
+  });
+
+  it('appends the user turn once to session context and mirrors workflow assistant output only to db/transcript', async () => {
+    orchestrationService.streamExecute.mockImplementation(async function* () {
+      yield { type: 'chunk', agentName: 'Claude', delta: 'Hello' };
+      yield { type: 'agent_stream_end', agentName: 'Claude', fullContent: 'Hello world' };
+      yield { type: 'complete', finalOutput: 'Hello world', agentName: 'Claude' };
+    });
+
+    const result = await gateway.handleMessage(
+      client as any,
+      {
+        sessionId,
+        content: prompt,
+      } as any,
+    );
+
+    expect(result.success).toBe(true);
+    expect(sessionContextService.appendUserTurn).toHaveBeenCalledTimes(1);
+    expect(sessionContextService.appendUserTurn).toHaveBeenCalledWith(
+      sessionId,
+      expect.objectContaining({
+        content: prompt,
+      }),
+    );
+    expect(sessionContextService.appendAssistantTurn).not.toHaveBeenCalled();
+    expect(messageRepository.save).toHaveBeenCalledTimes(2);
+    expect(transcriptService.appendEntry).toHaveBeenCalledTimes(2);
+    expect(serverEmit).toHaveBeenCalledWith(
+      'workflow:agent_stream_end',
+      expect.objectContaining({
+        sessionId,
+        agentName: 'Claude',
+        fullContent: 'Hello world',
+      }),
+    );
   });
 
   it('emits streamed chunks and persists the aggregated assistant message once after completion', async () => {
@@ -132,11 +206,10 @@ describe('ChatGateway streaming agent responses', () => {
       }),
     );
 
-    expect(conversationHistoryService.append).toHaveBeenCalledTimes(1);
-    expect(conversationHistoryService.append).toHaveBeenCalledWith(
+    expect(sessionContextService.appendAssistantTurn).toHaveBeenCalledTimes(1);
+    expect(sessionContextService.appendAssistantTurn).toHaveBeenCalledWith(
       sessionId,
       expect.objectContaining({
-        role: 'assistant',
         content: 'Hello world',
         agentId: 'claude-001',
         agentName: 'Claude',
@@ -185,7 +258,7 @@ describe('ChatGateway streaming agent responses', () => {
     );
 
     expect(messageRepository.save).not.toHaveBeenCalled();
-    expect(conversationHistoryService.append).not.toHaveBeenCalled();
+    expect(sessionContextService.appendAssistantTurn).not.toHaveBeenCalled();
     expect(transcriptService.appendEntry).not.toHaveBeenCalled();
     expect(priorityService.recordUsage).not.toHaveBeenCalled();
   });
@@ -240,31 +313,31 @@ describe('ChatGateway streaming agent responses', () => {
     ]);
 
     expect(messageRepository.save).not.toHaveBeenCalled();
-    expect(conversationHistoryService.append).not.toHaveBeenCalled();
+    expect(sessionContextService.appendAssistantTurn).not.toHaveBeenCalled();
     expect(transcriptService.appendEntry).not.toHaveBeenCalled();
     expect(priorityService.recordUsage).not.toHaveBeenCalled();
   });
 
   it('emits session:deleted and disconnects clients on successful deletion', async () => {
-    const sessionId = 'test-session';
+    const deletionSessionId = 'test-session';
 
-    await gateway.handleSessionDelete(client as any, { sessionId });
+    await gateway.handleSessionDelete(client as any, { sessionId: deletionSessionId });
 
-    expect(deletionService.deleteSession).toHaveBeenCalledWith(sessionId);
-    expect(serverEmit).toHaveBeenCalledWith('session:delete:started', { sessionId });
-    expect(serverEmit).toHaveBeenCalledWith('session:deleted', { sessionId });
+    expect(deletionService.deleteSession).toHaveBeenCalledWith(deletionSessionId);
+    expect(serverEmit).toHaveBeenCalledWith('session:delete:started', { sessionId: deletionSessionId });
+    expect(serverEmit).toHaveBeenCalledWith('session:deleted', { sessionId: deletionSessionId });
   });
 
   it('queues deletion on failure', async () => {
-    const sessionId = 'test-session';
+    const deletionSessionId = 'test-session';
     deletionService.deleteSession.mockRejectedValue(new Error('DB error'));
 
-    const result = await gateway.handleSessionDelete(client as any, { sessionId });
+    const result = await gateway.handleSessionDelete(client as any, { sessionId: deletionSessionId });
 
     expect(result).toEqual({ success: true, queued: true });
-    expect(deletionQueue.add).toHaveBeenCalledWith({ sessionId });
+    expect(deletionQueue.add).toHaveBeenCalledWith({ sessionId: deletionSessionId });
     expect(serverEmit).toHaveBeenCalledWith('session:delete:queued', {
-      sessionId,
+      sessionId: deletionSessionId,
       message: 'Deletion queued for retry',
     });
   });

@@ -1,4 +1,4 @@
-import { Message, SharedMemory, WorkspaceChangeEvent } from '../../common/types';
+import { Message, SessionTurn, SharedMemory, WorkspaceChangeEvent } from '../../common/types';
 
 export interface ILLMAdapter {
   readonly id: string;
@@ -19,7 +19,7 @@ export interface ILLMAdapter {
 export interface AgentContext {
   sessionId: string;
   userId?: string;
-  conversationHistory?: Message[];
+  conversationHistory?: Array<Message | SessionTurn>;
   sharedMemory?: SharedMemory;
   workspaceChange?: WorkspaceChangeEvent;
 }

@@ -18,7 +18,6 @@ import { MessageRouter } from './message.router';
 import { AgentRouter } from './agent-router';
 import { SendMessageDto } from './dto/send-message.dto';
 import { DebugPromptDto } from './dto/debug-prompt.dto';
-import { ConversationHistoryService } from '../memory/services/conversation-history.service';
 import { TranscriptService, TranscriptEntry } from '../workspace/services/transcript.service';
 import { WorkspaceService } from '../workspace/services/workspace.service';
 import { MessageEntity } from '../database/entities/message.entity';
@@ -33,6 +32,7 @@ import { SessionDeletionService } from '../session/session-deletion.service';
 import { PromptTemplateService } from '../agents/prompts/prompt-template.service';
 import { PromptBuilder } from '../agents/prompts/prompt-builder';
 import { OrchestrationService } from '../orchestration/orchestration.service';
+import { SessionContextService } from '../orchestration/context/session-context.service';
 import { Message } from '../common/types/message.types';
 
 @WebSocketGateway({
@@ -53,7 +53,7 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     private readonly sessionManager: SessionManager,
     private readonly messageRouter: MessageRouter,
     private readonly agentRouter: AgentRouter,
-    private readonly conversationHistoryService: ConversationHistoryService,
+    private readonly sessionContextService: SessionContextService,
     private readonly transcriptService: TranscriptService,
     private readonly workspaceService: WorkspaceService,
     @InjectRepository(MessageEntity)
@@ -159,10 +159,8 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
 
     // 必须先 append 再写入 PostgreSQL：Redis 未命中时 shortTermMemory.get 会从 DB 拉取，
     // 若用户行已存在，append 会再 push 一次同一条，导致上下文里用户话重复。
-    await this.conversationHistoryService.append(sessionId, {
-      role: 'user',
+    await this.sessionContextService.appendUserTurn(sessionId, {
       content: data.content,
-      timestamp: new Date().toISOString(),
     });
 
     const messageEntity = this.messageRepository.create({
@@ -215,7 +213,7 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
           fullContent: event.fullContent,
           timestamp: new Date(),
         });
-        await this.persistAssistantMessage(sessionId, event.fullContent, event.agentName);
+        await this.mirrorAssistantTurnToStorage(sessionId, event.fullContent, event.agentName);
       }
 
       // complete 事件：通知前端 workflow 结束（持久化已在 agent_stream_end 完成，无需重复写）
@@ -406,15 +404,15 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     });
 
     try {
-      const historyContext = await this.conversationHistoryService.getContext(sessionId, agent.id);
-      const conversationHistory = historyContext.messages.map((m, idx) => ({
-        id: `msg_mem_${idx}`,
+      const sessionContext = await this.sessionContextService.getContext(sessionId);
+      const conversationHistory = sessionContext.turns.map((turn, idx) => ({
+        id: turn.id || `msg_mem_${idx}`,
         sessionId,
-        role: m.role,
-        content: m.content,
-        agentId: m.agentId,
-        agentName: m.agentName,
-        createdAt: new Date(m.timestamp),
+        role: turn.role,
+        content: turn.content,
+        agentId: turn.agentId,
+        agentName: turn.agentName,
+        createdAt: turn.createdAt,
       }));
 
       const context: AgentContext = {
@@ -461,12 +459,10 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       });
       await this.messageRepository.save(messageEntity);
 
-      await this.conversationHistoryService.append(sessionId, {
-        role: 'assistant',
+      await this.sessionContextService.appendAssistantTurn(sessionId, {
         content: fullContent,
         agentId: agent.id,
         agentName: agent.name,
-        timestamp: new Date().toISOString(),
       });
 
       await this.transcriptService.appendEntry(sessionId, {
@@ -520,7 +516,7 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
    * 将 Orchestration 路径产生的 assistant 回复持久化到 PostgreSQL 和 transcript。
    * conversationHistory 的写入已在 run_task 节点完成，此处只补 DB 存储。
    */
-  private async persistAssistantMessage(sessionId: string, content: string, agentName: string): Promise<void> {
+  private async mirrorAssistantTurnToStorage(sessionId: string, content: string, agentName: string): Promise<void> {
     if (!content.trim()) return;
 
     const agent = this.agentRouter.getAgentByName(agentName);
@@ -545,7 +541,7 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       timestamp: new Date().toISOString(),
     });
 
-    this.logger.log(`[ChatGateway] Persisted assistant message: agentName=${agentName}, length=${content.length}`);
+    this.logger.log(`[ChatGateway] Mirrored assistant message: agentName=${agentName}, length=${content.length}`);
   }
 
   /** 调试对话：不依赖 users 表；messages.user_id 存 null。并确保 sessions 存在以满足 session 外键。 */

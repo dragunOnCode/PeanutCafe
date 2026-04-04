@@ -90,8 +90,23 @@ describe('PromptBuilder', () => {
       const context = {
         sessionId: 'test-session',
         conversationHistory: [
-          { id: '1', role: 'user', content: 'Hello', timestamp: new Date() },
-          { id: '2', role: 'assistant', content: 'Hi there', agentName: 'Claude', timestamp: new Date() },
+          {
+            id: '1',
+            sessionId: 'test-session',
+            role: 'user',
+            kind: 'user',
+            content: 'Hello',
+            createdAt: new Date(),
+          },
+          {
+            id: '2',
+            sessionId: 'test-session',
+            role: 'assistant',
+            kind: 'assistant',
+            content: 'Hi there',
+            agentName: 'Claude',
+            createdAt: new Date(),
+          },
         ],
       };
 

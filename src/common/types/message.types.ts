@@ -6,6 +6,7 @@ export interface Message {
   agentName?: string;
   role: MessageRole;
   content: string;
+  kind?: 'user' | 'assistant' | 'system' | 'handoff_summary';
   mentionedAgents?: string[];
   metadata?: Record<string, unknown>;
   createdAt: Date;

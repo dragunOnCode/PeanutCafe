@@ -5,6 +5,8 @@ import { GeminiAdapter } from './gemini.adapter';
 import { AgentContext, AgentStatus } from '../interfaces/llm-adapter.interface';
 import { ToolExecutorService } from '../tools/tool-executor.service';
 import { PromptBuilder } from '../prompts/prompt-builder';
+import { ReactPromptBuilder } from '../react/react-prompt.builder';
+import { ConversationHistoryService } from '../../memory/services/conversation-history.service';
 import { ChatMessage } from '../utils/build-chat-messages';
 
 jest.mock('openai', () => ({
@@ -26,7 +28,9 @@ describe('GeminiAdapter', () => {
 
   const mockToolExecutorService = {
     registerSessionTools: jest.fn(),
+    getOpenAITools: jest.fn().mockReturnValue([]),
     parseToolCalls: jest.fn().mockReturnValue([]),
+    executeToolCall: jest.fn(),
     executeAllToolCalls: jest.fn().mockResolvedValue([]),
   };
 
@@ -37,15 +41,25 @@ describe('GeminiAdapter', () => {
     ] as ChatMessage[]),
   };
 
+  const mockReactPromptBuilder = {
+    buildSystemPrompt: jest.fn().mockResolvedValue('mocked react system prompt'),
+  };
+
+  const mockConversationHistoryService = {
+    getContext: jest.fn().mockResolvedValue([]),
+  };
+
   const MockedOpenAI = OpenAI as unknown as jest.Mock;
 
   const mockContext: AgentContext = {
     sessionId: 'test-session',
     userId: 'test-user',
   };
+  const mockMessage = { id: 'msg-1', content: 'hello', type: 'text', timestamp: new Date() } as const;
 
   const createStream = (...chunks: string[]) => ({
     [Symbol.asyncIterator]: async function* () {
+      await Promise.resolve();
       for (const chunk of chunks) {
         yield {
           choices: [
@@ -62,6 +76,7 @@ describe('GeminiAdapter', () => {
 
   const createMixedStream = () => ({
     [Symbol.asyncIterator]: async function* () {
+      await Promise.resolve();
       yield {
         choices: [
           {
@@ -126,6 +141,14 @@ describe('GeminiAdapter', () => {
         {
           provide: PromptBuilder,
           useValue: mockPromptBuilder,
+        },
+        {
+          provide: ReactPromptBuilder,
+          useValue: mockReactPromptBuilder,
+        },
+        {
+          provide: ConversationHistoryService,
+          useValue: mockConversationHistoryService,
         },
       ],
     }).compile();
@@ -211,6 +234,7 @@ describe('GeminiAdapter', () => {
     it('resets status and propagates stream errors', async () => {
       createMock.mockResolvedValue({
         [Symbol.asyncIterator]: async function* () {
+          await Promise.resolve();
           yield {
             choices: [
               {
@@ -258,7 +282,7 @@ describe('GeminiAdapter', () => {
 
   describe('shouldRespond', () => {
     it('always returns true', async () => {
-      const result = await adapter.shouldRespond({} as any, {} as any);
+      const result = await adapter.shouldRespond(mockMessage, mockContext);
       expect(result.should).toBe(true);
     });
   });
