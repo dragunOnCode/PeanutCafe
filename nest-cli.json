@@ -7,14 +7,15 @@
   },
   "watchOptions": {
     "ignored": [
-      "logs/**",
-      "workspace/**",
-      "dist/**",
-      "node_modules/**",
-      "Frontend/**",
-      "docs/**",
-      ".worktrees/**",
-      "claude-code/**"
+      "**/logs/**",
+      "**/workspace/**",
+      "**/sessions/**",
+      "**/dist/**",
+      "**/node_modules/**",
+      "**/Frontend/**",
+      "**/docs/**",
+      "**/.worktrees/**",
+      "**/claude-code/**"
     ]
   }
 }
