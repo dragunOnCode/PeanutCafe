@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ToolExecutorService, ToolCall } from '../tools/tool-executor.service';
-import { StreamingReactParser } from './utils/parse-react-tags';
+import { parseReactOutput } from './utils/parse-react-tags';
 
 export interface ReasoningStep {
   id: string;
@@ -8,8 +8,20 @@ export interface ReasoningStep {
   toolCall: { name: string; args: Record<string, unknown> } | null;
   observation: string;
   isDone: boolean;
+  doneContent?: string;
   handoffAgent?: string;
+  message?: ChatMessage;
 }
+
+/**
+ * Adapter → createRunTaskNode 之间的统一流式事件契约。
+ * 每一层只需要关心这一个类型。
+ */
+export type ReActStreamEvent =
+  | { type: 'text_delta'; text: string }
+  | { type: 'done'; content: string }
+  | { type: 'handoff'; agentName: string }
+  | { type: 'error'; message: string };
 
 export interface ReActConfig {
   maxSteps: number;
@@ -33,10 +45,11 @@ export class ReActExecutorService {
     private readonly llmCaller: LLMCaller,
   ) {}
 
-  async *execute(messages: ChatMessage[], config: ReActConfig): AsyncGenerator<ReasoningStep> {
-    const parser = new StreamingReactParser();
+  async *execute(initialMessages: ChatMessage[], config: ReActConfig): AsyncGenerator<ReasoningStep> {
     let stepCount = 0;
     const tools = this.toolExecutorService.getOpenAITools();
+
+    const messages: ChatMessage[] = [...initialMessages];
 
     this.logger.log(`Starting ReAct loop with maxSteps=${config.maxSteps}`);
 
@@ -53,19 +66,23 @@ export class ReActExecutorService {
       }
 
       let fullContent = '';
-      let toolCallsFromResponse: ToolCall[] = [];
+      const partialToolCalls = new Map<number, { id: string; name: string; args: string }>();
 
       try {
         for await (const chunk of response) {
           if (chunk.content) {
             fullContent += chunk.content;
-            const parsed = parser.feed(chunk.content);
-            if (parsed.thought) {
-              config.onThoughtChunk?.(parsed.thought);
-            }
+            config.onThoughtChunk?.(chunk.content);
           }
           if (chunk.tool_calls) {
-            toolCallsFromResponse = this.parseToolCalls(chunk.tool_calls);
+            for (const tc of chunk.tool_calls as any[]) {
+              const idx: number = tc.index ?? 0;
+              const existing = partialToolCalls.get(idx) ?? { id: '', name: '', args: '' };
+              if (tc.id) existing.id = tc.id;
+              if (tc.function?.name) existing.name += tc.function.name;
+              if (tc.function?.arguments) existing.args += tc.function.arguments;
+              partialToolCalls.set(idx, existing);
+            }
           }
         }
       } catch (error) {
@@ -74,7 +91,7 @@ export class ReActExecutorService {
         return;
       }
 
-      const parsed = parser.feed('');
+      const parsed = parseReactOutput(fullContent);
 
       if (parsed.done) {
         this.logger.log(`ReAct loop terminated: done tag received`);
@@ -85,6 +102,7 @@ export class ReActExecutorService {
           toolCall: null,
           observation: '',
           isDone: true,
+          doneContent: parsed.done,
         };
         return;
       }
@@ -102,8 +120,22 @@ export class ReActExecutorService {
         return;
       }
 
-      if (toolCallsFromResponse.length > 0 && parsed.thought) {
-        const toolCall = toolCallsFromResponse[0];
+      const toolCalls: ToolCall[] = [...partialToolCalls.values()].map((tc, i) => ({
+        id: tc.id || `tc_${Date.now()}_${i}`,
+        name: tc.name,
+        args: this.safeParseArgs(tc.args),
+      }));
+
+      const originalToolCallsForMsg = [...partialToolCalls.values()].map((tc) => ({
+        id: tc.id,
+        type: 'function' as const,
+        function: { name: tc.name, arguments: tc.args },
+      }));
+
+      const thought = parsed.thought ?? (fullContent.trim() || null);
+
+      if (toolCalls.length > 0 && thought) {
+        const toolCall = toolCalls[0];
         this.logger.debug(`Executing tool: ${toolCall.name}`);
 
         const toolResult = await this.executeWithRetry(toolCall, stepId);
@@ -114,40 +146,71 @@ export class ReActExecutorService {
 
         config.onObservation?.(toolResult.result ?? '');
 
-        messages.push({ role: 'assistant', content: `<thought>${parsed.thought}</thought>` });
-        messages.push({ role: 'user', content: `<observation>${toolResult.result ?? toolResult.error}</observation>` });
+        const assistantMsg: ChatMessage = {
+          role: 'assistant',
+          content: fullContent,
+          tool_calls: originalToolCallsForMsg,
+        };
+
+        const toolResultMsg: ChatMessage = {
+          role: 'tool',
+          tool_call_id: toolCall.id,
+          content: toolResult.success ? (toolResult.result ?? '') : `Error: ${toolResult.error ?? ''}`,
+        };
+
+        messages.push(assistantMsg);
+        messages.push(toolResultMsg);
 
         yield {
           id: stepId,
-          thought: parsed.thought,
+          thought,
           toolCall: { name: toolCall.name, args: toolCall.args },
           observation: toolResult.result ?? '',
           isDone: false,
+          message: assistantMsg,
+        };
+
+        yield {
+          id: `${stepId}_tool`,
+          thought: null,
+          toolCall: null,
+          observation: toolResult.success ? (toolResult.result ?? '') : `Error: ${toolResult.error ?? ''}`,
+          isDone: false,
+          message: toolResultMsg,
         };
 
         stepCount++;
-      } else if (parsed.thought) {
-        // LLM 输出 thought 但没有工具调用，也没有 done/handoff
-        // 记录 reasoning 步骤并计数，防止无限循环
-        this.logger.debug(`Thought without action: ${parsed.thought.substring(0, 50)}...`);
-        messages.push({ role: 'assistant', content: `<thought>${parsed.thought}</thought>` });
+      } else if (thought) {
+        this.logger.debug(`Thought without action: ${thought.substring(0, 50)}...`);
+
+        messages.push({ role: 'assistant', content: fullContent });
+
         yield {
           id: stepId,
-          thought: parsed.thought,
+          thought,
           toolCall: null,
           observation: '',
           isDone: false,
+          message: { role: 'assistant', content: fullContent },
         };
         stepCount++;
       } else {
-        // 无任何输出（空 generator 或 无效响应）
-        // 仍然计数以防止无限循环
         this.logger.warn(`Empty LLM response, incrementing stepCount to prevent infinite loop`);
         stepCount++;
       }
     }
 
     this.logger.log(`ReAct loop reached max_steps limit: ${config.maxSteps}`);
+  }
+
+  private safeParseArgs(args: string): Record<string, unknown> {
+    if (!args) return {};
+    try {
+      return JSON.parse(args);
+    } catch {
+      this.logger.error(`Failed to parse tool args: ${args}`);
+      return {};
+    }
   }
 
   private async executeWithRetry(
@@ -180,21 +243,10 @@ export class ReActExecutorService {
     return { success: false, error: '工具执行失败' };
   }
 
-  private parseToolCalls(toolCalls: any[]): ToolCall[] {
-    return toolCalls.map((tc, index) => ({
-      id: tc.id ?? `tc_${Date.now()}_${index}`,
-      name: tc.function?.name ?? tc.name,
-      args:
-        typeof tc.function?.arguments === 'string'
-          ? JSON.parse(tc.function.arguments)
-          : (tc.function?.arguments ?? tc.arguments ?? {}),
-    }));
-  }
-
   private createErrorStep(stepId: string, errorMessage: string): ReasoningStep {
     return {
       id: stepId,
-      thought: null,
+      thought: errorMessage,
       toolCall: null,
       observation: '',
       isDone: false,
@@ -202,7 +254,9 @@ export class ReActExecutorService {
   }
 }
 
-interface ChatMessage {
-  role: 'system' | 'user' | 'assistant';
+export interface ChatMessage {
+  role: 'system' | 'user' | 'assistant' | 'tool';
   content: string;
+  tool_calls?: any[];
+  tool_call_id?: string;
 }

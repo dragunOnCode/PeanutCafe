@@ -1,4 +1,18 @@
+jest.mock('./mcp-direct-http', () => ({
+  mcpDirectHttpPost: jest.fn(),
+}));
+
 import { McpClientImpl } from './mcp-client';
+import { mcpDirectHttpPost } from './mcp-direct-http';
+
+const httpPost = jest.mocked(mcpDirectHttpPost);
+
+function bindFetchMock(fetchMock: jest.Mock) {
+  httpPost.mockImplementation(
+    (url: string, headers: Record<string, string>, body: string, signal?: AbortSignal) =>
+      fetchMock(url, { method: 'POST', headers, body, signal }),
+  );
+}
 
 describe('McpClientImpl stdio transport', () => {
   it('stays disconnected in stdio mode until connect is called', async () => {
@@ -18,10 +32,8 @@ describe('McpClientImpl stdio transport', () => {
 });
 
 describe('McpClientImpl HTTP transport', () => {
-  const originalFetch = global.fetch;
-
   afterEach(() => {
-    global.fetch = originalFetch;
+    httpPost.mockReset();
     jest.restoreAllMocks();
   });
 
@@ -61,7 +73,7 @@ describe('McpClientImpl HTTP transport', () => {
           },
         }),
       );
-    global.fetch = fetchMock;
+    bindFetchMock(fetchMock);
 
     const client = new McpClientImpl('http://localhost:3001/mcp');
 
@@ -161,7 +173,7 @@ describe('McpClientImpl HTTP transport', () => {
           },
         }),
       );
-    global.fetch = fetchMock;
+    bindFetchMock(fetchMock);
 
     const client = new McpClientImpl('http://localhost:3001/mcp');
 
@@ -221,7 +233,7 @@ describe('McpClientImpl HTTP transport', () => {
         },
         json: () => Promise.resolve({ jsonrpc: '2.0', id: 2, result: { tools } }),
       } as Response);
-    global.fetch = fetchMock;
+    bindFetchMock(fetchMock);
 
     const client = new McpClientImpl('http://localhost:3001/mcp');
 
@@ -266,7 +278,7 @@ describe('McpClientImpl HTTP transport', () => {
             ].join('\n'),
           ),
       } as Response);
-    global.fetch = fetchMock;
+    bindFetchMock(fetchMock);
 
     const client = new McpClientImpl('http://localhost:3001/mcp');
 
@@ -317,7 +329,7 @@ describe('McpClientImpl HTTP transport', () => {
           },
         ),
       );
-    global.fetch = fetchMock;
+    bindFetchMock(fetchMock);
 
     const client = new McpClientImpl('http://localhost:3001/mcp');
 
@@ -374,7 +386,7 @@ describe('McpClientImpl HTTP transport', () => {
           },
         ),
       );
-    global.fetch = fetchMock;
+    bindFetchMock(fetchMock);
 
     const client = new McpClientImpl('http://localhost:3001/mcp');
 
@@ -414,7 +426,7 @@ describe('McpClientImpl HTTP transport', () => {
           },
         }),
       );
-    global.fetch = fetchMock;
+    bindFetchMock(fetchMock);
 
     const client = new McpClientImpl('http://localhost:3001/mcp');
 
@@ -438,7 +450,7 @@ describe('McpClientImpl HTTP transport', () => {
       .fn<typeof fetch>()
       .mockImplementationOnce(() => initializeResponse)
       .mockResolvedValue(notificationResponse);
-    global.fetch = fetchMock;
+    bindFetchMock(fetchMock);
 
     const client = new McpClientImpl('http://localhost:3001/mcp');
 
@@ -489,7 +501,7 @@ describe('McpClientImpl HTTP transport', () => {
           },
         }),
       );
-    global.fetch = fetchMock;
+    bindFetchMock(fetchMock);
 
     const client = new McpClientImpl('http://localhost:3001/mcp');
 
@@ -532,7 +544,7 @@ describe('McpClientImpl HTTP transport', () => {
       abortSignal = init?.signal as AbortSignal | undefined;
       return initializeResponse;
     });
-    global.fetch = fetchMock;
+    bindFetchMock(fetchMock);
 
     const client = new McpClientImpl('http://localhost:3001/mcp');
 
@@ -579,7 +591,7 @@ describe('McpClientImpl HTTP transport', () => {
         operationSignal = init?.signal as AbortSignal | undefined;
         return pendingListToolsResponse;
       });
-    global.fetch = fetchMock;
+    bindFetchMock(fetchMock);
 
     const client = new McpClientImpl('http://localhost:3001/mcp');
 
@@ -644,7 +656,7 @@ describe('McpClientImpl HTTP transport', () => {
         operationSignal = init?.signal as AbortSignal | undefined;
         return Promise.resolve(delayedResponse);
       });
-    global.fetch = fetchMock;
+    bindFetchMock(fetchMock);
 
     const client = new McpClientImpl('http://localhost:3001/mcp');
 
@@ -703,7 +715,7 @@ describe('McpClientImpl HTTP transport', () => {
           },
         ),
       );
-    global.fetch = fetchMock;
+    bindFetchMock(fetchMock);
 
     const client = new McpClientImpl('http://localhost:3001/mcp');
 
@@ -782,7 +794,7 @@ describe('McpClientImpl HTTP transport', () => {
           },
         }),
       );
-    global.fetch = fetchMock;
+    bindFetchMock(fetchMock);
 
     const client = new McpClientImpl('http://localhost:3001/mcp');
 
@@ -836,7 +848,7 @@ describe('McpClientImpl HTTP transport', () => {
           },
         }),
       );
-    global.fetch = fetchMock;
+    bindFetchMock(fetchMock);
 
     const client = new McpClientImpl('http://localhost:3001/mcp');
 
@@ -897,7 +909,7 @@ describe('McpClientImpl HTTP transport', () => {
           },
         }),
       );
-    global.fetch = fetchMock;
+    bindFetchMock(fetchMock);
 
     const client = new McpClientImpl('http://localhost:3001/mcp');
 
@@ -963,7 +975,7 @@ describe('McpClientImpl HTTP transport', () => {
           },
         ),
       );
-    global.fetch = fetchMock;
+    bindFetchMock(fetchMock);
 
     const client = new McpClientImpl('http://localhost:3001/mcp');
 
@@ -1025,7 +1037,7 @@ describe('McpClientImpl HTTP transport', () => {
           },
         ),
       );
-    global.fetch = fetchMock;
+    bindFetchMock(fetchMock);
 
     const client = new McpClientImpl('http://localhost:3001/mcp');
 
@@ -1082,7 +1094,7 @@ describe('McpClientImpl HTTP transport', () => {
         }),
       )
       .mockRejectedValueOnce(new Error('network broke'));
-    global.fetch = fetchMock;
+    bindFetchMock(fetchMock);
 
     const client = new McpClientImpl('http://localhost:3001/mcp');
     await client.connect();
@@ -1121,7 +1133,7 @@ describe('McpClientImpl HTTP transport', () => {
           },
         }),
       );
-    global.fetch = fetchMock;
+    bindFetchMock(fetchMock);
 
     const client = new McpClientImpl('http://localhost:3001/mcp');
     await client.connect();

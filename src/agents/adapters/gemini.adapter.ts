@@ -11,6 +11,9 @@ import {
 import { Message } from '../../common/types';
 import { ToolExecutorService } from '../tools/tool-executor.service';
 import { PromptBuilder } from '../prompts/prompt-builder';
+import { ReActExecutorService, ReActConfig, LLMCaller, ReActStreamEvent } from '../react/react-executor.service';
+import { ReactPromptBuilder } from '../react/react-prompt.builder';
+import { ConversationHistoryService } from '../../memory/services/conversation-history.service';
 
 type NativeMessage = OpenAI.ChatCompletionMessageParam;
 
@@ -33,6 +36,8 @@ export class GeminiAdapter implements ILLMAdapter {
     private readonly configService: ConfigService,
     private readonly toolExecutorService: ToolExecutorService,
     private readonly promptBuilder: PromptBuilder,
+    private readonly reactPromptBuilder: ReactPromptBuilder,
+    private readonly conversationHistoryService: ConversationHistoryService,
   ) {
     this.client = new OpenAI({
       apiKey: this.configService.getOrThrow<string>('QWEN_API_KEY'),
@@ -154,6 +159,98 @@ export class GeminiAdapter implements ILLMAdapter {
       throw error;
     } finally {
       this.status = AgentStatus.ONLINE;
+    }
+  }
+
+  /**
+   * ReAct 模式的流式执行。
+   * yield ReActStreamEvent 供 createRunTaskNode 统一分发。
+   */
+  async *executeWithReAct(
+    message: string,
+    context: AgentContext,
+    options?: { maxSteps?: number },
+  ): AsyncGenerator<ReActStreamEvent> {
+    this.status = AgentStatus.BUSY;
+    this.logger.log(`Gemini executeWithReAct started for session ${context.sessionId}`);
+
+    this.toolExecutorService.registerSessionTools(context.sessionId);
+    const tools = this.toolExecutorService.getOpenAITools();
+
+    try {
+      const systemPrompt = await this.reactPromptBuilder.buildSystemPrompt(context.sessionId, this.type, {
+        name: this.name,
+        role: this.role,
+        model: this.model,
+        taskDescription: message,
+        availableTools: tools.map((t: any) => t.function.name).join(', '),
+        maxSteps: options?.maxSteps ?? 10,
+      });
+
+      const historyMessages: any[] = (context.conversationHistory || []).map((m) => ({
+        role: m.role,
+        content: m.content,
+        name: m.agentName,
+      }));
+
+      const messages: any[] = [
+        { role: 'system', content: systemPrompt },
+        ...historyMessages,
+        { role: 'user', content: message },
+      ];
+
+      const llmCaller: LLMCaller = async function* (msgs: any[], _tools: any[]) {
+        const stream = await this.client.chat.completions.create({
+          model: this.model,
+          messages: msgs,
+          tools: _tools.length > 0 ? _tools : undefined,
+          tool_choice: _tools.length > 0 ? 'auto' : undefined,
+          temperature: 0.8,
+          max_tokens: 4000,
+          stream: true,
+        });
+
+        for await (const chunk of stream) {
+          const delta = chunk.choices?.[0]?.delta;
+          if (delta?.content) {
+            yield { content: delta.content };
+          }
+          if (delta?.tool_calls) {
+            yield { tool_calls: delta.tool_calls };
+          }
+        }
+      }.bind(this);
+
+      const executor = new ReActExecutorService(this.toolExecutorService, llmCaller);
+
+      const config: ReActConfig = {
+        maxSteps: options?.maxSteps ?? 10,
+        sessionId: context.sessionId,
+      };
+
+      for await (const step of executor.execute(messages, config)) {
+        if (step.thought) {
+          yield { type: 'text_delta', text: step.thought };
+        }
+        // observation 只在纯工具结果步骤（thought === null）上 yield，
+        // 避免与前一个同 step 的 thought 步骤重复上报工具执行结果
+        if (step.observation && step.thought === null) {
+          yield { type: 'text_delta', text: step.observation };
+        }
+        if (step.isDone) {
+          yield { type: 'done', content: step.doneContent ?? '' };
+        }
+        if (step.handoffAgent) {
+          yield { type: 'handoff', agentName: step.handoffAgent };
+        }
+      }
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      this.logger.error(`Gemini executeWithReAct error: ${msg}`);
+      yield { type: 'error', message: msg };
+    } finally {
+      this.status = AgentStatus.ONLINE;
+      this.logger.log(`Gemini executeWithReAct finished for session ${context.sessionId}`);
     }
   }
 

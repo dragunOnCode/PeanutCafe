@@ -29,3 +29,5 @@ lerna-debug.log*
 .worktrees
 workspace/
 workspace/sessions/
+
+# Claude code

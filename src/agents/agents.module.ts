@@ -9,8 +9,10 @@ import { GeminiAdapter } from './adapters/gemini.adapter';
 import { ToolRegistry } from './tools/tool-registry';
 import { CommandExecutor } from './tools/command-executor';
 import { ToolExecutorService } from './tools/tool-executor.service';
+import { ReactPromptBuilder } from './react/react-prompt.builder';
 import { apikeyConfig, geminiConfig } from '../config/configuration';
 import { McpModule } from '../mcp/mcp.module';
+import { MemoryModule } from '../memory/memory.module';
 
 @Module({
   imports: [
@@ -18,6 +20,7 @@ import { McpModule } from '../mcp/mcp.module';
     ConfigModule.forFeature(apikeyConfig),
     ConfigModule.forFeature(geminiConfig),
     forwardRef(() => McpModule),
+    MemoryModule,
   ],
   providers: [
     AgentConfigService,
@@ -28,6 +31,7 @@ import { McpModule } from '../mcp/mcp.module';
     ToolRegistry,
     CommandExecutor,
     ToolExecutorService,
+    ReactPromptBuilder,
   ],
   exports: [
     AgentConfigService,

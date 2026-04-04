@@ -1,4 +1,16 @@
 {
   "extends": "./tsconfig.json",
-  "exclude": ["node_modules", "test", "dist", "Frontend", "**/*spec.ts"]
+  "include": ["src/**/*.ts"],
+  "exclude": [
+    "node_modules",
+    "test",
+    "dist",
+    "Frontend",
+    "docs",
+    "logs",
+    "workspace",
+    ".worktrees",
+    "claude-code",
+    "**/*spec.ts"
+  ]
 }

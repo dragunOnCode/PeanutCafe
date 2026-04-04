@@ -41,8 +41,12 @@ export class McpServerManager implements OnModuleInit, OnModuleDestroy {
     this.config = config.mcpServers || {};
 
     for (const [name, serverConfig] of Object.entries(this.config)) {
-      if (serverConfig.enabled) {
+      if (!serverConfig.enabled) continue;
+      try {
         await this.startServer(name);
+      } catch (e) {
+        const err = e instanceof Error ? e : new Error(String(e));
+        this.logger.error(`MCP server "${name}" failed to start: ${err.message}`, err.stack);
       }
     }
   }
@@ -56,6 +60,9 @@ export class McpServerManager implements OnModuleInit, OnModuleDestroy {
     this.logger.log(`Starting MCP server: ${name}`);
 
     const normalizedConfig = this.normalizeConfig(config);
+    if (normalizedConfig.url) {
+      this.logger.log(`MCP "${name}" HTTP URL: ${normalizedConfig.url}`);
+    }
     const { client, containerId } = await this.createClient(normalizedConfig, name);
 
     await client.connect();

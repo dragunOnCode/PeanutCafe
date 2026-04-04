@@ -17,6 +17,9 @@ export function stripSpecialTags(output: string): string {
     .replace(/<NEED_REVIEW>/gi, '')
     .replace(/<handoff_agent>[\s\S]*?<\/handoff_agent>/gi, '')
     .replace(/<reasoning>[\s\S]*?<\/reasoning>/gi, '')
+    .replace(/<thought>[\s\S]*?<\/thought>/gi, '')
+    .replace(/<observation>[\s\S]*?<\/observation>/gi, '')
+    .replace(/<done>[\s\S]*?<\/done>/gi, '')
     .trim();
 }
 

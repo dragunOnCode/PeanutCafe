@@ -5,7 +5,9 @@ import type { AgentRouter } from '../../gateway/agent-router';
 import type { ConversationHistoryService } from '../../memory/services/conversation-history.service';
 import { CotWriterService } from '../chain-of-thought/cot-writer.service';
 import { parseAgentOutput, stripSpecialTags } from '../handoff/output-parser';
+import type { ReActStreamEvent } from '../../agents/react/react-executor.service';
 import { parseMention } from '../handoff/mention-parser';
+/* eslint-disable @typescript-eslint/no-non-null-assertion */
 
 export const WORKFLOW_NODES = {
   HYDRATE: 'hydrate_session_state',
@@ -92,33 +94,52 @@ function createRunTaskNode(
 
     try {
       logger.log(`[LangGraph] run_task: calling LLM with message: ${userMessage.substring(0, 50)}...`);
-      let fullContent = '';
 
-      // 根据 useReAct 配置选择执行模式（默认开启 ReAct）
       const useReAct = state.metadata.useReAct !== false;
 
+      let fullContent = '';
+      let cleanContent = '';
+      let handoffAgent: string | null = null;
+
       if (useReAct && 'executeWithReAct' in agent) {
-        // ReAct 模式：显式推理循环
         logger.log(`[LangGraph] run_task: using ReAct mode for ${state.currentAgent}`);
-        for await (const chunk of (agent as any).executeWithReAct(userMessage, context, {
+
+        let doneContent: string | null = null;
+
+        for await (const event of (agent as any).executeWithReAct(userMessage, context, {
           maxSteps: (state.metadata.reactMaxSteps as number) ?? 10,
-        })) {
-          fullContent += chunk;
-          hooks?.onChunk(state.currentAgent, chunk);
+        }) as AsyncGenerator<ReActStreamEvent>) {
+          switch (event.type) {
+            case 'text_delta':
+              fullContent += event.text;
+              hooks?.onChunk(state.currentAgent!, event.text);
+              break;
+            case 'done':
+              doneContent = event.content;
+              break;
+            case 'handoff':
+              handoffAgent = event.agentName;
+              break;
+            case 'error':
+              logger.error(`[LangGraph] run_task: ReAct error event: ${event.message}`);
+              break;
+          }
         }
+
+        cleanContent = doneContent ?? fullContent;
       } else {
-        // 标准模式：原有 tool-use 循环
         logger.log(`[LangGraph] run_task: using standard mode for ${state.currentAgent}`);
         for await (const chunk of agent.streamGenerate(userMessage, context)) {
           fullContent += chunk;
-          hooks?.onChunk(state.currentAgent, chunk);
+          hooks?.onChunk(state.currentAgent!, chunk);
         }
+
+        cleanContent = stripSpecialTags(fullContent);
+        const parsed = parseAgentOutput(fullContent);
+        handoffAgent = parsed.nextAgent;
       }
 
       logger.log(`[LangGraph] run_task: LLM response received, length=${fullContent.length}`);
-
-      const cleanContent = stripSpecialTags(fullContent);
-      const parsed = parseAgentOutput(fullContent);
 
       stepCounter++;
       reasoningSteps.push({
@@ -137,7 +158,12 @@ function createRunTaskNode(
         timestamp: new Date().toISOString(),
       });
 
-      hooks?.onAgentStreamEnd(state.currentAgent, cleanContent);
+      hooks?.onAgentStreamEnd(state.currentAgent!, cleanContent);
+
+      let lastOutput = fullContent;
+      if (handoffAgent && !lastOutput.includes('<handoff_agent>')) {
+        lastOutput += `<handoff_agent>${handoffAgent}</handoff_agent>`;
+      }
 
       await cotWriter.writeAgentThinking(
         state.sessionId,
@@ -145,14 +171,14 @@ function createRunTaskNode(
         agent.name,
         plan,
         reasoningSteps,
-        parsed.nextAgent || undefined,
+        handoffAgent || undefined,
       );
 
       return {
         ...state,
         hasError: false,
         errorMessage: undefined,
-        lastOutput: fullContent,
+        lastOutput,
         reasoningSteps,
         currentPlan: plan,
       };

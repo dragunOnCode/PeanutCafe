@@ -1,5 +1,7 @@
 import { Logger } from '@nestjs/common';
+import { inspect } from 'node:util';
 import { Readable, Writable } from 'stream';
+import { mcpDirectHttpPost } from './mcp-direct-http.js';
 import { McpTool } from './mcp.interfaces.js';
 
 interface JsonRpcError {
@@ -23,6 +25,55 @@ interface ResponseLike {
 
 type ContainerExec = { stdout: Readable; stdin: Writable };
 const CONNECT_ABORTED_MESSAGE = 'HTTP request failed: The operation was aborted.';
+
+function formatFetchFailure(error: unknown): string {
+  const parts: string[] = [];
+  const seen = new Set<unknown>();
+
+  const pushErrno = (e: NodeJS.ErrnoException) => {
+    if (e.code) parts.push(`code=${e.code}`);
+    if (e.errno !== undefined) parts.push(`errno=${e.errno}`);
+    if (e.syscall) parts.push(`syscall=${e.syscall}`);
+    const sys = e as NodeJS.ErrnoException & { address?: string; port?: number };
+    if (sys.address !== undefined) parts.push(`addr=${String(sys.address)}`);
+    if (sys.port !== undefined) parts.push(`port=${String(sys.port)}`);
+  };
+
+  const walk = (err: unknown): void => {
+    if (err === undefined || err === null || seen.has(err)) return;
+    seen.add(err);
+
+    if (typeof err === 'object' && err !== null && 'errors' in err && Array.isArray((err as AggregateError).errors)) {
+      const ae = err as AggregateError;
+      if (ae.message) parts.push(ae.message);
+      for (const sub of ae.errors) walk(sub);
+      return;
+    }
+
+    if (err instanceof Error) {
+      parts.push(err.message);
+      pushErrno(err);
+      walk((err as Error & { cause?: unknown }).cause);
+      return;
+    }
+
+    if (typeof err === 'object') {
+      const o = err as Record<string, unknown>;
+      if (typeof o.message === 'string') parts.push(o.message);
+      if (typeof o.code === 'string' || typeof o.code === 'number') parts.push(`code=${String(o.code)}`);
+      return;
+    }
+
+    parts.push(String(err));
+  };
+
+  walk(error);
+  const joined = [...new Set(parts.filter(Boolean))].join(' · ');
+  if (joined === 'fetch failed' || joined === 'Failed to fetch') {
+    return `${joined} | ${inspect(error, { depth: 8, colors: false })}`;
+  }
+  return joined;
+}
 
 export class McpClientImpl {
   private readonly logger = new Logger(McpClientImpl.name);
@@ -264,12 +315,12 @@ export class McpClientImpl {
 
     let response: ResponseLike;
     try {
-      response = (await fetch(this.baseUrl, {
-        method: 'POST',
+      response = (await mcpDirectHttpPost(
+        this.baseUrl,
         headers,
-        body: JSON.stringify(body),
-        signal: signal ?? abortController?.signal,
-      })) as ResponseLike;
+        JSON.stringify(body),
+        signal ?? abortController?.signal,
+      )) as ResponseLike;
     } catch (error) {
       if (abortController) {
         this.activeHttpAbortControllers.delete(abortController);
@@ -277,7 +328,7 @@ export class McpClientImpl {
       if (error instanceof DOMException && error.name === 'AbortError') {
         throw new Error(CONNECT_ABORTED_MESSAGE);
       }
-      throw new Error(`HTTP request failed: ${error instanceof Error ? error.message : String(error)}`);
+      throw new Error(`HTTP request failed: ${formatFetchFailure(error)}`);
     }
 
     if (!response.ok) {

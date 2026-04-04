@@ -1,16 +1,16 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import * as fs from 'fs';
 import * as path from 'path';
 import { McpServerManager } from './mcp-server-manager';
 import { ToolRegistry, Tool } from '../agents/tools/tool-registry';
-import { IMcpClient, McpTool, McpServerConfig } from './mcp.interfaces';
+import { IMcpClient, McpTool, McpServerConfig, ServerStatus } from './mcp.interfaces';
 
 interface McpConfig {
   mcpServers?: Record<string, McpServerConfig>;
 }
 
 @Injectable()
-export class McpToolRegistry implements OnModuleInit {
+export class McpToolRegistry implements OnApplicationBootstrap {
   private readonly logger = new Logger(McpToolRegistry.name);
   private initialized = false;
 
@@ -19,7 +19,7 @@ export class McpToolRegistry implements OnModuleInit {
     private readonly toolRegistry: ToolRegistry,
   ) {}
 
-  async onModuleInit(): Promise<void> {
+  async onApplicationBootstrap(): Promise<void> {
     if (this.initialized) return;
     await this.registerAllServerTools();
     this.initialized = true;
@@ -36,12 +36,18 @@ export class McpToolRegistry implements OnModuleInit {
     const mcpServers = config.mcpServers || {};
 
     for (const [name, serverConfig] of Object.entries(mcpServers)) {
-      if (serverConfig.enabled) {
-        try {
-          await this.registerServerTools(name);
-        } catch (e) {
-          this.logger.error(`Failed to register tools for ${name}: ${e.message}`);
-        }
+      if (!serverConfig.enabled) continue;
+      if (this.mcpServerManager.getServerStatus(name) !== ServerStatus.RUNNING) {
+        this.logger.warn(
+          `Skipping MCP tools for "${name}": server did not connect (see McpServerManager errors above).`,
+        );
+        continue;
+      }
+      try {
+        await this.registerServerTools(name);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        this.logger.error(`Failed to register tools for ${name}: ${msg}`);
       }
     }
   }

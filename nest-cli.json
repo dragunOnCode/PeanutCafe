@@ -6,6 +6,15 @@
     "deleteOutDir": true
   },
   "watchOptions": {
-    "ignored": ["logs/**", "workspace/**", "dist/**", "node_modules/**", "Frontend/**", "docs/**", ".worktrees/**"]
+    "ignored": [
+      "logs/**",
+      "workspace/**",
+      "dist/**",
+      "node_modules/**",
+      "Frontend/**",
+      "docs/**",
+      ".worktrees/**",
+      "claude-code/**"
+    ]
   }
 }

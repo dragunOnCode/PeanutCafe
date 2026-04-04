@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "open-websearch": {
-      "url": "http://localhost:3001/mcp",
+      "url": "http://124.223.96.102:3001/mcp",
       "enabled": true,
       "timeout": 30000,
       "profile": "open-websearch"
