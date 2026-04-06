@@ -1,6 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import OpenAI from 'openai';
+import { promises as fs } from 'fs';
+import { join } from 'path';
 import {
   ILLMAdapter,
   AgentContext,
@@ -10,7 +12,13 @@ import {
 } from '../interfaces/llm-adapter.interface';
 import { ToolExecutorService } from '../tools/tool-executor.service';
 import { PromptBuilder } from '../prompts/prompt-builder';
-import { ReActExecutorService, ReActConfig, LLMCaller, ReActStreamEvent, ChatMessage } from '../react/react-executor.service';
+import {
+  ReActExecutorService,
+  ReActConfig,
+  LLMCaller,
+  ReActStreamEvent,
+  ChatMessage,
+} from '../react/react-executor.service';
 import { ReactPromptBuilder } from '../react/react-prompt.builder';
 import { ConversationHistoryService } from '../../memory/services/conversation-history.service';
 
@@ -93,6 +101,18 @@ export class ClaudeAdapter implements ILLMAdapter {
     try {
       const currentMessages: NativeMessage[] = [...(await this.buildMessages(context))];
       this.logger.log(`Claude streamGenerate input messages: ${JSON.stringify(currentMessages)}`);
+
+      const requestPayload = {
+        model: this.model,
+        messages: currentMessages,
+        tools: tools.length > 0 ? tools : undefined,
+        tool_choice: tools.length > 0 ? 'auto' : undefined,
+        temperature: 0.7,
+        max_tokens: 4000,
+        stream: true,
+      };
+
+      await this.logLlmRequest(context.sessionId, this.id, requestPayload);
 
       while (true) {
         const stream = (await this.client.chat.completions.create({
@@ -202,6 +222,8 @@ export class ClaudeAdapter implements ILLMAdapter {
         maxSteps: options?.maxSteps ?? 10,
       });
 
+      this.logger.log(`Codex executeWithReAct systemPrompt: ${systemPrompt}`);
+
       const historyMessages: ChatMessage[] = (context.conversationHistory ?? []).map((m) => ({
         role: m.role,
         content: m.content,
@@ -281,6 +303,14 @@ export class ClaudeAdapter implements ILLMAdapter {
 
   getStatus(): AgentStatus {
     return this.status;
+  }
+
+  private async logLlmRequest(sessionId: string, agentId: string, payload: Record<string, unknown>): Promise<void> {
+    const dir = join('workspace', 'sessions', sessionId, 'llm-requests');
+    const fileName = `${Date.now()}_${agentId}.json`;
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(join(dir, fileName), JSON.stringify(payload, null, 2), 'utf-8');
+    this.logger.log(`[ClaudeAdapter] LLM request logged to ${dir}/${fileName}`);
   }
 
   private async buildMessages(context: AgentContext): Promise<NativeMessage[]> {

@@ -50,6 +50,7 @@ export class ReActExecutorService {
     const tools = this.toolExecutorService.getOpenAITools();
 
     const messages: ChatMessage[] = [...initialMessages];
+    this.logger.log(`input messages: ${JSON.stringify(messages)}`);
 
     this.logger.log(`Starting ReAct loop with maxSteps=${config.maxSteps}`);
 
